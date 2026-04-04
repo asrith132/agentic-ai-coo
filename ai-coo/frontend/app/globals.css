@@ -1,0 +1,183 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: oklch(0.09 0.01 260);
+  --foreground: oklch(0.98 0 0);
+  --card: oklch(0.12 0.01 260);
+  --card-foreground: oklch(0.98 0 0);
+  --popover: oklch(0.12 0.01 260);
+  --popover-foreground: oklch(0.98 0 0);
+  --primary: oklch(0.75 0.18 165);
+  --primary-foreground: oklch(0.09 0.01 260);
+  --secondary: oklch(0.18 0.01 260);
+  --secondary-foreground: oklch(0.98 0 0);
+  --muted: oklch(0.18 0.01 260);
+  --muted-foreground: oklch(0.65 0 0);
+  --accent: oklch(0.75 0.18 165);
+  --accent-foreground: oklch(0.09 0.01 260);
+  --destructive: oklch(0.65 0.2 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.22 0.01 260);
+  --input: oklch(0.18 0.01 260);
+  --ring: oklch(0.75 0.18 165);
+  --chart-1: oklch(0.75 0.18 165);
+  --chart-2: oklch(0.7 0.15 280);
+  --chart-3: oklch(0.8 0.15 85);
+  --chart-4: oklch(0.7 0.18 200);
+  --chart-5: oklch(0.65 0.2 25);
+  --radius: 0.75rem;
+  --sidebar: oklch(0.11 0.01 260);
+  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar-primary: oklch(0.75 0.18 165);
+  --sidebar-primary-foreground: oklch(0.09 0.01 260);
+  --sidebar-accent: oklch(0.18 0.01 260);
+  --sidebar-accent-foreground: oklch(0.98 0 0);
+  --sidebar-border: oklch(0.22 0.01 260);
+  --sidebar-ring: oklch(0.75 0.18 165);
+  --animate-ripple: ripple var(--duration, 2s) ease calc(var(--i, 0) * 0.2s)
+    infinite;
+}
+
+.dark {
+  --background: oklch(0.09 0.01 260);
+  --foreground: oklch(0.98 0 0);
+  --card: oklch(0.12 0.01 260);
+  --card-foreground: oklch(0.98 0 0);
+  --popover: oklch(0.12 0.01 260);
+  --popover-foreground: oklch(0.98 0 0);
+  --primary: oklch(0.75 0.18 165);
+  --primary-foreground: oklch(0.09 0.01 260);
+  --secondary: oklch(0.18 0.01 260);
+  --secondary-foreground: oklch(0.98 0 0);
+  --muted: oklch(0.18 0.01 260);
+  --muted-foreground: oklch(0.65 0 0);
+  --accent: oklch(0.75 0.18 165);
+  --accent-foreground: oklch(0.09 0.01 260);
+  --destructive: oklch(0.65 0.2 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.22 0.01 260);
+  --input: oklch(0.18 0.01 260);
+  --ring: oklch(0.75 0.18 165);
+  --chart-1: oklch(0.75 0.18 165);
+  --chart-2: oklch(0.7 0.15 280);
+  --chart-3: oklch(0.8 0.15 85);
+  --chart-4: oklch(0.7 0.18 200);
+  --chart-5: oklch(0.65 0.2 25);
+  --sidebar: oklch(0.11 0.01 260);
+  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar-primary: oklch(0.75 0.18 165);
+  --sidebar-primary-foreground: oklch(0.09 0.01 260);
+  --sidebar-accent: oklch(0.18 0.01 260);
+  --sidebar-accent-foreground: oklch(0.98 0 0);
+  --sidebar-border: oklch(0.22 0.01 260);
+  --sidebar-ring: oklch(0.75 0.18 165);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes line-flow {
+  0% {
+    stroke-dashoffset: 120;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes float-gentle {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes marquee-left {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes scan-width {
+  0%,
+  100% {
+    transform: scaleX(0.92);
+  }
+  50% {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes meter-rise {
+  0%,
+  100% {
+    transform: scaleY(0.85);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+}
+
+.dashboard-line-flow {
+  stroke-dasharray: 10 10;
+  animation: line-flow 2.2s linear infinite;
+}
+
+.dashboard-float {
+  animation: float-gentle 3s ease-in-out infinite;
+}
+
+.dashboard-marquee {
+  animation: marquee-left 14s linear infinite;
+}
+
+.dashboard-scan {
+  transform-origin: left center;
+  animation: scan-width 1.8s ease-in-out infinite;
+}
+
+.dashboard-meter-rise {
+  transform-origin: bottom center;
+  animation: meter-rise 1.9s ease-in-out infinite;
+}
