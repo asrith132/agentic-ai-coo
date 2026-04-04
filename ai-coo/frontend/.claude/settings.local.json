@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx shadcn@latest add @magicui/animated-theme-toggler --yes)",
+      "Bash(npm run:*)",
+      "WebFetch(domain:21st.dev)",
+      "Bash(python3 .claude/skills/ui-ux-pro-max/scripts/search.py \"glassmorphism frosted glass dark dashboard card\" --domain style -n 2)",
+      "Bash(python3 .claude/skills/ui-ux-pro-max/scripts/search.py \"glassmorphism backdrop blur card dashboard\" --domain ux -n 2)",
+      "Bash(npx tsc:*)",
+      "Bash(python3 .claude/skills/ui-ux-pro-max/scripts/search.py \"glassmorphism ticker marquee frosted dark\" --domain style -n 2)"
+    ]
+  }
+}
