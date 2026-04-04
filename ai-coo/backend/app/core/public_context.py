@@ -7,6 +7,13 @@ Authenticated flows should load user / org context from Supabase instead.
 PUBLIC_PM_CONTEXT = {
     "assistant_name": "PM Agent",
     "product_description": "A planning agent that turns startup goals into executable tasks.",
+    # Shown to Claude for anonymous voice/chat: what to do when user needs saved plans / private context.
+    "visitor_auth_flow": (
+        "The user is not logged in. There is no private global context or saved tasks yet. "
+        "If they want real planning, task breakdown, or persistence, tell them clearly they need "
+        "to sign in first, and that the app will send them to the login page (redirect_to /login). "
+        "Until then, stay within the guest rules below."
+    ),
     "guest_mode_rules": [
         "Can explain what PM Agent does",
         "Can answer basic questions",

@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     # ── App ───────────────────────────────────────────────────────────────────
     environment: str = "development"
     log_level: str = "INFO"
+    # When true, print Claude’s raw text (and guest-mode hints) to stderr — always visible in the uvicorn terminal.
+    log_claude_raw_to_stderr: bool = True
 
     @field_validator(
         "anthropic_api_key",

@@ -38,14 +38,16 @@ from app.agents.pm.repository import (
     save_decomposed_plan_to_supabase,
     start_pm_task,
 )
-from app.agents.pm.guest_mode import build_guest_pm_voice_payload
+from app.agents.pm.intake_flow import process_logged_in_pm_voice_with_intake
 from app.agents.pm.voice import (
     create_scribe_single_use_token,
     get_pm_tts_debug_info,
+    process_guest_pm_voice_transcript,
     process_pm_voice_transcript,
 )
 from app.config import settings
 from app.core.auth import get_voice_user_optional, require_pm_user
+from app.core.context import record_pm_voice_turn
 from app.agents.pm.tools import (
     PmTaskCompletionRefused,
     apply_feature_shipped_event,
@@ -466,19 +468,45 @@ def pm_voice_transcript(
     (user = committed STT, assistant = prior ``spoken_reply``) so Claude can clarify
     across turns. Optional ElevenLabs TTS does not affect success if it fails.
 
-    Valid ``Authorization: Bearer`` (Supabase access token) → full Claude PM pipeline.
-    Missing or invalid Bearer → deterministic guest assistant (no 401); login prompts
-    only appear in JSON when the guest classifier returns ``login_required``.
+    Valid ``Authorization: Bearer`` (Supabase access token) → full Claude PM pipeline
+    (intake + global context when available).
+
+    Missing or invalid Bearer → Claude guest pipeline: model reads ``PUBLIC_PM_CONTEXT``,
+    answers within guest rules, and returns ``login_required`` + ``redirect_to`` ``/login``
+    when the user needs sign-in for saved planning. Falls back to rule-based guest mode
+    if Claude fails (no 401).
     """
     if user is not None:
         conv = [t.model_dump(mode="python") for t in body.conversation]
         try:
-            result = process_pm_voice_transcript(
+            result = process_logged_in_pm_voice_with_intake(
                 body.transcript,
                 conversation=conv,
                 include_decomposed_plan=include_decomposed_plan,
                 include_tts_audio=include_tts_audio,
             )
+        except RuntimeError:
+            logger.warning(
+                "PM intake skipped: global context unavailable; falling back to legacy voice pipeline",
+            )
+            try:
+                result = process_pm_voice_transcript(
+                    body.transcript,
+                    conversation=conv,
+                    include_decomposed_plan=include_decomposed_plan,
+                    include_tts_audio=include_tts_audio,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=str(exc).strip()[:2000],
+                ) from exc
+            except Exception as exc:
+                logger.exception("PM voice transcript failed")
+                raise HTTPException(
+                    status_code=502,
+                    detail=(str(exc).strip() or repr(exc))[:2000],
+                ) from exc
         except ValueError as exc:
             raise HTTPException(
                 status_code=502,
@@ -491,15 +519,26 @@ def pm_voice_transcript(
                 detail=(str(exc).strip() or repr(exc))[:2000],
             ) from exc
 
+        record_pm_voice_turn(body.transcript, result)
         return {
             "message": "Voice transcript processed",
             "result": result,
         }
 
-    result = build_guest_pm_voice_payload(
-        body.transcript,
-        include_tts_audio=include_tts_audio,
-    )
+    conv = [t.model_dump(mode="python") for t in body.conversation]
+    try:
+        result = process_guest_pm_voice_transcript(
+            body.transcript,
+            conversation=conv,
+            include_tts_audio=include_tts_audio,
+        )
+    except Exception as exc:
+        logger.exception("Guest PM voice transcript failed")
+        raise HTTPException(
+            status_code=502,
+            detail=(str(exc).strip() or repr(exc))[:2000],
+        ) from exc
+
     return {
         "message": "Voice transcript processed (guest mode)",
         "result": result,

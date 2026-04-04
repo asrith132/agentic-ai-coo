@@ -12,8 +12,9 @@ Model: claude-sonnet-4-6 (current production model)
 """
 
 from __future__ import annotations
-import time
 import logging
+import sys
+import time
 from typing import Any, List, Optional
 
 import anthropic
@@ -25,6 +26,19 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 4096
 MAX_RETRIES = 3
 BASE_RETRY_DELAY = 2.0  # seconds; doubles each retry
+
+
+def _emit_claude_raw(kind: str, text: str | None) -> None:
+    """Stderr is always tied to the uvicorn terminal; logging INFO often is not."""
+    logger.info("Claude API response (%s):\n%s", kind, text or "")
+    if not settings.log_claude_raw_to_stderr:
+        return
+    body = text if text else "(no text)"
+    print(
+        f"\n========== Claude raw ({kind}) ==========\n{body}\n========== /Claude ==========\n",
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 class LLMClient:
@@ -97,7 +111,9 @@ class LLMClient:
         block = response.content[0]
         if block.type != "text":
             raise ValueError(f"Expected text response, got: {block.type}")
-        return block.text
+        text = block.text
+        _emit_claude_raw("chat", text)
+        return text
 
     def chat_conversation(
         self,
@@ -126,7 +142,9 @@ class LLMClient:
                 text_parts.append(block.text)
         if not text_parts:
             raise ValueError("Expected at least one text block from Claude")
-        return "".join(text_parts)
+        out = "".join(text_parts)
+        _emit_claude_raw("chat_conversation", out)
+        return out
 
     def chat_with_tools(
         self,
@@ -168,8 +186,24 @@ class LLMClient:
             elif block.type == "tool_use":
                 tool_calls.append({"id": block.id, "name": block.name, "input": block.input})
 
+        text_out = "\n".join(text_parts) if text_parts else None
+        if text_out:
+            _emit_claude_raw("chat_with_tools", text_out)
+        elif tool_calls:
+            names = [tc["name"] for tc in tool_calls]
+            logger.info(
+                "Claude API response (chat_with_tools): text empty, tool_calls=%s",
+                names,
+            )
+            if settings.log_claude_raw_to_stderr:
+                print(
+                    f"\n========== Claude raw (chat_with_tools) ==========\n"
+                    f"(no text; tool_calls={names})\n========== /Claude ==========\n",
+                    file=sys.stderr,
+                    flush=True,
+                )
         return {
-            "text": "\n".join(text_parts) if text_parts else None,
+            "text": text_out,
             "tool_calls": tool_calls,
             "stop_reason": response.stop_reason,
         }

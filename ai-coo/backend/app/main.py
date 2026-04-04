@@ -9,6 +9,8 @@ CORS is open in development (allow_origins=["*"]). In production,
 replace "*" with your actual frontend origin(s).
 """
 
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -81,6 +83,18 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.on_event("startup")
 async def startup_event():
     """Ping Supabase on startup to surface misconfigured credentials early."""
+    # Align root + app loggers with settings (uvicorn often leaves root at WARNING).
+    level = getattr(
+        logging,
+        (settings.log_level or "INFO").upper(),
+        logging.INFO,
+    )
+    root = logging.getLogger()
+    root.setLevel(level)
+    logging.getLogger("app").setLevel(level)
+    for _h in root.handlers:
+        _h.setLevel(level)
+
     from app.db.supabase_client import get_client
     try:
         get_client().table("global_context").select("id").limit(1).execute()

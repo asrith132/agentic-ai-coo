@@ -16,9 +16,12 @@ from typing import Any, Mapping
 
 import httpx
 
+from app.agents.pm.guest_mode import LOGIN_REQUIRED_SPOKEN_REPLY
 from app.agents.pm.tools import decompose_founder_goal, parse_founder_goal
 from app.config import settings
+from app.core.context import format_global_context_for_prompt, try_get_global_context
 from app.core.llm import llm
+from app.core.public_context import PUBLIC_PM_CONTEXT
 from app.schemas.pm import FounderGoalInput, PmVoiceTranscriptResult
 
 logger = logging.getLogger(__name__)
@@ -62,6 +65,30 @@ JSON shape (all keys must be present):
   "clarification_questions": string[],
   "spoken_reply": string
 }
+"""
+
+GUEST_PM_VOICE_SYSTEM_PROMPT = """You are the PM Agent assistant for a visitor who is NOT logged in.
+
+## Public context (authoritative JSON from the server — do not invent product features or saved data)
+{public_context_json}
+
+## Behavior
+- Treat the JSON above as the only source of truth about what you can do before login.
+- You cannot use private global context, saved tasks, or persistence until the user signs in.
+- Be conversational and helpful within the guest rules: explain the product, answer meta-questions, suggest starter ideas.
+- If the user wants **saved planning**, **task breakdown that persists**, **milestones/backlog**, or anything that requires their account, set `status` to `login_required`.
+- For `login_required`: `spoken_reply` must briefly say they need to sign in first and that you will take them to the login page (TTS-friendly, 1–3 sentences). The client uses `redirect_to` — you must set it to exactly `"/login"` when status is `login_required`.
+- For on-topic help that does not require saving or private context, use `status` `guest_answer` and `redirect_to` null.
+- If unsure whether persistence is implied, prefer `login_required` when they describe a concrete project they want you to execute or save.
+
+## Output
+Return a single JSON object only. No markdown fences, no commentary.
+
+Required keys:
+- `status`: `"guest_answer"` or `"login_required"`
+- `spoken_reply`: string
+- `starter_prompts`: null (use server defaults) or a non-empty array of short example prompts
+- `redirect_to`: null, or `"/login"` when status is `login_required`
 """
 
 
@@ -394,6 +421,104 @@ def _maybe_decomposed_plan(result: PmVoiceTranscriptResult) -> dict[str, Any] | 
         return {"decomposed_plan_error": (str(exc).strip() or repr(exc))[:500]}
 
 
+def _coerce_guest_claude_json(data: dict[str, Any]) -> dict[str, Any]:
+    status = data.get("status")
+    if status not in ("guest_answer", "login_required"):
+        status = "guest_answer"
+    spoken = str(data.get("spoken_reply") or "").strip()
+    if not spoken:
+        spoken = (
+            LOGIN_REQUIRED_SPOKEN_REPLY
+            if status == "login_required"
+            else (
+                f"I'm {PUBLIC_PM_CONTEXT.get('assistant_name', 'PM Agent')}. "
+                "Log in when you are ready to plan with your saved workspace."
+            )
+        )
+    sp_raw = data.get("starter_prompts")
+    starters: list[str] | None = None
+    if isinstance(sp_raw, list) and len(sp_raw) > 0:
+        starters = [str(x).strip() for x in sp_raw if str(x).strip()]
+        if not starters:
+            starters = None
+    return {
+        "status": status,
+        "spoken_reply": spoken,
+        "starter_prompts": starters,
+    }
+
+
+def process_guest_pm_voice_transcript(
+    transcript: str,
+    *,
+    conversation: list[dict[str, str]] | None = None,
+    include_tts_audio: bool = False,
+) -> dict[str, Any]:
+    """
+    Anonymous PM voice: Claude reads ``PUBLIC_PM_CONTEXT`` and returns ``guest_answer`` or
+    ``login_required`` (with ``/login`` redirect). Falls back to rule-based guest mode if
+    Claude output is invalid or the API fails.
+
+    Private ``global_context`` from the database is intentionally **not** attached (would leak
+    workspace data to unauthenticated clients).
+    """
+    from app.agents.pm.guest_mode import handle_guest_pm_input, shape_guest_pm_voice_api_payload
+
+    t = (transcript or "").strip()
+    if not t:
+        guest = handle_guest_pm_input("")
+        return shape_guest_pm_voice_api_payload(
+            status=str(guest["status"]),
+            spoken_reply=str(guest.get("spoken_reply") or ""),
+            starter_prompts=guest.get("starter_prompts"),
+            include_tts_audio=include_tts_audio,
+        )
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    final_user = (
+        f"The visitor is NOT logged in. Reference date: {today}.\n\n"
+        f"Latest voice transcript (current user turn):\n\"\"\"\n{t}\n\"\"\""
+    )
+    conv = conversation or []
+    if conv:
+        messages = _build_claude_messages(conv, final_user)
+    else:
+        messages = [{"role": "user", "content": final_user}]
+
+    public_json = json.dumps(PUBLIC_PM_CONTEXT, ensure_ascii=False, indent=2)
+    system = GUEST_PM_VOICE_SYSTEM_PROMPT.format(public_context_json=public_json)
+
+    try:
+        raw = llm.chat_conversation(
+            system_prompt=system,
+            messages=messages,
+            temperature=0.2,
+            max_tokens=1536,
+        )
+        parsed = _parse_claude_json(raw)
+        coerced = _coerce_guest_claude_json(parsed)
+    except Exception as exc:
+        logger.warning(
+            "Guest PM voice: Claude failed, using rule-based guest fallback: %s",
+            exc,
+            exc_info=True,
+        )
+        guest = handle_guest_pm_input(transcript)
+        return shape_guest_pm_voice_api_payload(
+            status=str(guest["status"]),
+            spoken_reply=str(guest.get("spoken_reply") or ""),
+            starter_prompts=guest.get("starter_prompts"),
+            include_tts_audio=include_tts_audio,
+        )
+
+    return shape_guest_pm_voice_api_payload(
+        status=coerced["status"],
+        spoken_reply=coerced["spoken_reply"],
+        starter_prompts=coerced["starter_prompts"],
+        include_tts_audio=include_tts_audio,
+    )
+
+
 def process_pm_voice_transcript(
     transcript: str,
     *,
@@ -427,8 +552,16 @@ def process_pm_voice_transcript(
     else:
         messages = [{"role": "user", "content": final_user}]
 
+    ctx_tail = format_global_context_for_prompt(try_get_global_context())
+    if not ctx_tail.strip():
+        ctx_tail = (
+            "\n\n## Global workspace context\n"
+            "(No global_context row in the database yet — seed it to attach live workspace data.)\n"
+        )
+    system_prompt = PM_VOICE_SYSTEM_PROMPT + ctx_tail
+
     raw = llm.chat_conversation(
-        system_prompt=PM_VOICE_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         messages=messages,
         temperature=0.2,
         max_tokens=2048,
@@ -438,13 +571,26 @@ def process_pm_voice_transcript(
 
     payload = validated.model_dump(mode="json")
 
+    if validated.status == "ready_to_plan":
+        try:
+            from app.agents.pm.intake_flow import attach_tasks_to_legacy_voice_result
+
+            payload.update(attach_tasks_to_legacy_voice_result(validated))
+        except Exception as exc:
+            logger.warning(
+                "Legacy PM voice: initial task generation skipped: %s",
+                exc,
+                exc_info=True,
+            )
+
     if include_decomposed_plan:
         extra = _maybe_decomposed_plan(validated)
         if extra:
             payload.update(extra)
 
+    reply_for_tts = str(payload.get("spoken_reply") or validated.spoken_reply or "").strip()
     tts = maybe_generate_tts(
-        validated.spoken_reply,
+        reply_for_tts,
         include_audio_base64=include_tts_audio,
     )
     if tts is not None:

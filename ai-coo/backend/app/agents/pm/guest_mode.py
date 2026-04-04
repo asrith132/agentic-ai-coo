@@ -164,23 +164,25 @@ def handle_guest_pm_input(message: str) -> dict[str, Any]:
     return _guest_answer_payload(spoken)
 
 
-def build_guest_pm_voice_payload(
-    transcript: str,
+def shape_guest_pm_voice_api_payload(
     *,
+    status: str,
+    spoken_reply: str,
+    starter_prompts: list[str] | None,
     include_tts_audio: bool,
 ) -> dict[str, Any]:
     """
-    Shape a PM voice ``result`` dict compatible with the authenticated endpoint,
-    plus optional ``tts`` from ElevenLabs (same as private flow).
+    Build the PM voice ``result`` dict for visitors (``guest_answer`` | ``login_required``).
 
-    Caller supplies ``include_tts_audio``; this function runs ``maybe_generate_tts``.
+    ``login_required`` always sets ``redirect_to`` to ``/login`` for the client redirect flow.
     """
     from app.agents.pm.voice import maybe_generate_tts
 
-    guest = handle_guest_pm_input(transcript)
-    spoken = str(guest.get("spoken_reply") or "").strip()
+    st = status if status in ("guest_answer", "login_required") else "guest_answer"
+    spoken = (spoken_reply or "").strip()
+    starters = list(starter_prompts) if starter_prompts else _starters()
     out: dict[str, Any] = {
-        "status": guest["status"],
+        "status": st,
         "goal": None,
         "deadline": None,
         "constraints": [],
@@ -189,11 +191,30 @@ def build_guest_pm_voice_payload(
         "notes": None,
         "clarification_questions": [],
         "spoken_reply": spoken,
-        "starter_prompts": guest.get("starter_prompts") or [],
-        "redirect_to": guest.get("redirect_to"),
+        "starter_prompts": starters,
+        "redirect_to": "/login" if st == "login_required" else None,
         "guest_mode": True,
     }
     tts = maybe_generate_tts(spoken, include_audio_base64=include_tts_audio)
     if tts is not None:
         out["tts"] = tts
     return out
+
+
+def build_guest_pm_voice_payload(
+    transcript: str,
+    *,
+    include_tts_audio: bool,
+) -> dict[str, Any]:
+    """
+    Deterministic guest path (rules only). Prefer ``process_guest_pm_voice_transcript`` for Claude.
+
+    Caller supplies ``include_tts_audio``; this function runs ``maybe_generate_tts``.
+    """
+    guest = handle_guest_pm_input(transcript)
+    return shape_guest_pm_voice_api_payload(
+        status=str(guest.get("status") or "guest_answer"),
+        spoken_reply=str(guest.get("spoken_reply") or ""),
+        starter_prompts=guest.get("starter_prompts"),
+        include_tts_audio=include_tts_audio,
+    )
