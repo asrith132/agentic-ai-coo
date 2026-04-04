@@ -1,10 +1,16 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Mic, MicOff } from "lucide-react";
 import { Ripple as RippleComponent } from "@/components/ui/ripple";
-import { useRealtimeMicTranscription } from "@/hooks/useRealtimeMicTranscription";
+import { useAuth } from "@/components/AuthProvider";
+import {
+  PM_PENDING_VOICE_TRANSCRIPT_KEY,
+  useRealtimeMicTranscription,
+} from "@/hooks/useRealtimeMicTranscription";
 
 type EyeMood = "idle" | "listening" | "thinking";
 
@@ -251,6 +257,14 @@ function ChatBar({
 
 export default function AgentFaceUI() {
   const [showLogo, setShowLogo] = useState(true);
+  const pathname = usePathname();
+  const {
+    user,
+    signOut,
+    getAccessToken,
+    loading: authLoading,
+    authConfigured,
+  } = useAuth();
 
   const {
     displayText,
@@ -262,7 +276,18 @@ export default function AgentFaceUI() {
     stopListening,
     setTranscriptFromTyping,
     micBusy,
-  } = useRealtimeMicTranscription();
+  } = useRealtimeMicTranscription({
+    getAccessToken,
+  });
+
+  useEffect(() => {
+    if (authLoading || !user) return;
+    if (typeof window === "undefined") return;
+    const pending = sessionStorage.getItem(PM_PENDING_VOICE_TRANSCRIPT_KEY);
+    if (!pending) return;
+    sessionStorage.removeItem(PM_PENDING_VOICE_TRANSCRIPT_KEY);
+    setTranscriptFromTyping(pending);
+  }, [authLoading, user?.id, setTranscriptFromTyping]);
 
   const mood: EyeMood = voiceProcessing
     ? "thinking"
@@ -315,7 +340,31 @@ export default function AgentFaceUI() {
             </div>
 
             <div className="relative z-10 flex min-h-screen flex-col items-center justify-between px-6 py-10 sm:px-8 sm:py-12">
-              <div />
+              <header className="flex w-full max-w-xl items-center justify-end gap-3 text-xs text-white/50">
+                {!authConfigured ? (
+                  <span className="text-white/35">Guest preview</span>
+                ) : user ? (
+                  <>
+                    <span className="max-w-[200px] truncate text-white/55">
+                      {user.email}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void signOut()}
+                      className="rounded-full border border-white/15 px-3 py-1 text-white/70 transition hover:border-white/25 hover:text-white"
+                    >
+                      Sign out
+                    </button>
+                  </>
+                ) : (
+                  <Link
+                    href={`/login?returnTo=${encodeURIComponent(pathname || "/")}`}
+                    className="rounded-full border border-orange-400/35 bg-orange-500/10 px-3 py-1 text-orange-100/90 transition hover:border-orange-300/50"
+                  >
+                    Sign in
+                  </Link>
+                )}
+              </header>
 
               <div className="flex w-full flex-1 items-center justify-center">
                 <EyesHero mood={mood} />

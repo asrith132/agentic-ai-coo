@@ -8,10 +8,17 @@ directly. Pydantic validates types on startup so missing required vars fail fast
 from functools import lru_cache
 
 from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
     # ── Supabase ──────────────────────────────────────────────────────────────
     supabase_url: str
     supabase_anon_key: str
@@ -22,6 +29,7 @@ class Settings(BaseSettings):
 
     # ── PM voice (ElevenLabs STT/TTS; STT may be client-side for MVP) ─────────
     elevenlabs_api_key: str = ""
+    # Optional; TTS uses built-in default voice in code — see voice.py (not Scribe/STT).
     elevenlabs_voice_id: str = ""
     elevenlabs_tts_model_id: str = ""
     elevenlabs_scribe_model_id: str = "scribe_v2_realtime"
@@ -46,11 +54,6 @@ class Settings(BaseSettings):
     # ── App ───────────────────────────────────────────────────────────────────
     environment: str = "development"
     log_level: str = "INFO"
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
 
     @field_validator(
         "anthropic_api_key",

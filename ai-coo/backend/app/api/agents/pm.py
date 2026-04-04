@@ -14,9 +14,9 @@ Routes:
   POST  /api/pm/tasks/{task_id}/complete — done + dependency sync + reprioritize + milestone rollup
   POST  /api/pm/tasks/{task_id}/complete-for/{agent_name} — same, with target_agent validation
   GET   /api/pm/tasks/{task_id}/activity — Task lifecycle activity log (newest first)
-  POST  /api/pm/voice/transcript — Voice intake: transcript → Claude → PM fields + optional TTS
+  POST  /api/pm/voice/transcript — Voice: Claude when Bearer valid; else guest assistant (no 401 for anonymous)
   GET   /api/pm/voice/scribe-token — Single-use token for browser ElevenLabs realtime STT
-  GET   /api/pm/voice/tts-debug — Resolved TTS voice_id/model + ElevenLabs voice name (debug)
+  GET   /api/pm/voice/tts-debug — TTS model + optional ElevenLabs voice name (debug)
   GET   /api/pm/tasks              — Task backlog sorted by priority
   POST  /api/pm/tasks              — Create a task manually
   PATCH /api/pm/tasks/{id}         — Update task status or fields
@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from app.agents.pm.repository import (
@@ -38,12 +38,14 @@ from app.agents.pm.repository import (
     save_decomposed_plan_to_supabase,
     start_pm_task,
 )
+from app.agents.pm.guest_mode import build_guest_pm_voice_payload
 from app.agents.pm.voice import (
     create_scribe_single_use_token,
     get_pm_tts_debug_info,
     process_pm_voice_transcript,
 )
 from app.config import settings
+from app.core.auth import get_voice_user_optional, require_pm_user
 from app.agents.pm.tools import (
     PmTaskCompletionRefused,
     apply_feature_shipped_event,
@@ -125,7 +127,10 @@ def plan_goal(body: FounderGoalInput) -> dict[str, Any]:
     "/plan-goal/save",
     summary="Parse, decompose, and persist founder goal to Supabase",
 )
-def plan_goal_save(body: FounderGoalInput) -> dict[str, Any]:
+def plan_goal_save(
+    body: FounderGoalInput,
+    _user: dict = Depends(require_pm_user),
+) -> dict[str, Any]:
     """
     Same pipeline as /plan-goal, then writes pm_milestones, pm_tasks, and
     pm_task_dependencies when the schema supports it.
@@ -260,7 +265,10 @@ def pm_tasks_pickup(
     "/tasks/{task_id}/start",
     summary="Mark a PM task in progress (todo → in_progress)",
 )
-def pm_task_start(task_id: str) -> dict[str, Any]:
+def pm_task_start(
+    task_id: str,
+    _user: dict = Depends(require_pm_user),
+) -> dict[str, Any]:
     """Idempotent-friendly: only transitions from ``todo``."""
     tid = _parse_pm_task_uuid_param(task_id)
     try:
@@ -281,6 +289,7 @@ def pm_task_start(task_id: str) -> dict[str, Any]:
 def pm_task_complete(
     task_id: str,
     body: CompletePmTaskRequest = CompletePmTaskRequest(),
+    _user: dict = Depends(require_pm_user),
 ) -> dict[str, Any]:
     """
     Sets ``status=done`` and ``completed_at``, runs dependency sync and backlog
@@ -321,6 +330,7 @@ def pm_task_complete_for_agent_route(
     task_id: str,
     agent_name: str,
     body: CompletePmTaskRequest = CompletePmTaskRequest(),
+    _user: dict = Depends(require_pm_user),
 ) -> dict[str, Any]:
     """
     Validates UUID, ensures the task is routed to ``agent_name`` when
@@ -420,13 +430,12 @@ def pm_voice_scribe_token() -> dict[str, Any]:
 
 @router.get(
     "/voice/tts-debug",
-    summary="Show resolved ElevenLabs TTS voice_id and voice name from API",
+    summary="TTS debug: model + optional ElevenLabs voice name (no voice id in response)",
 )
 def pm_voice_tts_debug() -> dict[str, Any]:
     """
-    Returns the ``voice_id`` and ``tts_model_id`` read from server env, and when
-    the API key is set, the voice ``name`` from ElevenLabs so you can confirm it
-    matches the voice you expect in the dashboard.
+    Returns ``tts_model_id`` and, when the API key can call the voices API, the
+    premade voice ``name``. Voice identifier is not included in the JSON.
     """
     return get_pm_tts_debug_info()
 
@@ -437,6 +446,7 @@ def pm_voice_tts_debug() -> dict[str, Any]:
 )
 def pm_voice_transcript(
     body: PmVoiceTranscriptRequest,
+    user: dict | None = Depends(get_voice_user_optional),
     include_decomposed_plan: bool = Query(
         default=False,
         description=(
@@ -455,29 +465,43 @@ def pm_voice_transcript(
     Client sends each STT segment as ``transcript`` and prior turns in ``conversation``
     (user = committed STT, assistant = prior ``spoken_reply``) so Claude can clarify
     across turns. Optional ElevenLabs TTS does not affect success if it fails.
-    """
-    conv = [t.model_dump(mode="python") for t in body.conversation]
-    try:
-        result = process_pm_voice_transcript(
-            body.transcript,
-            conversation=conv,
-            include_decomposed_plan=include_decomposed_plan,
-            include_tts_audio=include_tts_audio,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=str(exc).strip()[:2000],
-        ) from exc
-    except Exception as exc:
-        logger.exception("PM voice transcript failed")
-        raise HTTPException(
-            status_code=502,
-            detail=(str(exc).strip() or repr(exc))[:2000],
-        ) from exc
 
+    Valid ``Authorization: Bearer`` (Supabase access token) → full Claude PM pipeline.
+    Missing or invalid Bearer → deterministic guest assistant (no 401); login prompts
+    only appear in JSON when the guest classifier returns ``login_required``.
+    """
+    if user is not None:
+        conv = [t.model_dump(mode="python") for t in body.conversation]
+        try:
+            result = process_pm_voice_transcript(
+                body.transcript,
+                conversation=conv,
+                include_decomposed_plan=include_decomposed_plan,
+                include_tts_audio=include_tts_audio,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc).strip()[:2000],
+            ) from exc
+        except Exception as exc:
+            logger.exception("PM voice transcript failed")
+            raise HTTPException(
+                status_code=502,
+                detail=(str(exc).strip() or repr(exc))[:2000],
+            ) from exc
+
+        return {
+            "message": "Voice transcript processed",
+            "result": result,
+        }
+
+    result = build_guest_pm_voice_payload(
+        body.transcript,
+        include_tts_audio=include_tts_audio,
+    )
     return {
-        "message": "Voice transcript processed",
+        "message": "Voice transcript processed (guest mode)",
         "result": result,
     }
 
@@ -486,7 +510,10 @@ def pm_voice_transcript(
     "/apply-feature-shipped",
     summary="Apply feature_shipped: mark matching tasks done and roll up milestones",
 )
-def apply_feature_shipped(body: FeatureShippedPayload) -> dict[str, Any]:
+def apply_feature_shipped(
+    body: FeatureShippedPayload,
+    _user: dict = Depends(require_pm_user),
+) -> dict[str, Any]:
     """
     Deterministic substring match on open PM tasks, then complete milestones when
     all of their tasks are done. For manual testing; not wired to the event bus yet.
@@ -544,7 +571,10 @@ def list_tasks(
     summary="Create a task manually",
     status_code=201,
 )
-def create_task(body: CreateTaskRequest):
+def create_task(
+    body: CreateTaskRequest,
+    _user: dict = Depends(require_pm_user),
+):
     """
     Create a task (GitHub issue or internal record) directly from the dashboard.
     The PM agent will include it in the next reprioritization run.
@@ -557,7 +587,11 @@ def create_task(body: CreateTaskRequest):
     "/tasks/{task_id}",
     summary="Update a task",
 )
-def update_task(task_id: str, body: PatchTaskRequest):
+def update_task(
+    task_id: str,
+    body: PatchTaskRequest,
+    _user: dict = Depends(require_pm_user),
+):
     """
     Update a task's status, priority, assignee, or notes.
     Status changes emit pm.task_status_changed events for other agents to react.
@@ -585,6 +619,7 @@ def list_milestones():
 )
 def pm_reprioritize(
     body: ReprioritizeRequest = ReprioritizeRequest(),
+    _user: dict = Depends(require_pm_user),
 ) -> dict[str, Any]:
     """
     Recompute priority_score for open tasks, update Supabase, and append
@@ -615,7 +650,9 @@ def pm_reprioritize(
     "/sync-dependencies",
     summary="Sync todo/blocked from pm_task_dependencies",
 )
-def pm_sync_dependencies() -> dict[str, Any]:
+def pm_sync_dependencies(
+    _user: dict = Depends(require_pm_user),
+) -> dict[str, Any]:
     """Deterministic dependency-aware status updates for manual testing."""
     try:
         sync_result = sync_task_blocked_statuses()
@@ -634,7 +671,7 @@ def pm_sync_dependencies() -> dict[str, Any]:
 
 
 @router.post("/run", summary="Manually trigger the PM agent")
-def run_pm():
+def run_pm(_user: dict = Depends(require_pm_user)):
     """Enqueue a manual run of the PM agent via Celery."""
     from app.api.agents._task_dispatch import dispatch_agent_run
     return dispatch_agent_run("pm", {"type": "user_request", "user_input": "manual run"})

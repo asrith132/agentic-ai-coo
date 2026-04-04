@@ -28,7 +28,16 @@ function apiBaseUrlOrThrow(): string {
   return base;
 }
 
-export function useRealtimeMicTranscription() {
+/** SessionStorage key for resuming a line after guest hits `login_required`. */
+export const PM_PENDING_VOICE_TRANSCRIPT_KEY = "pm_pending_voice_transcript";
+
+export type UseRealtimeMicOptions = {
+  getAccessToken?: () => Promise<string | null>;
+};
+
+export function useRealtimeMicTranscription(
+  options?: UseRealtimeMicOptions,
+) {
   const [typedText, setTypedText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [voiceProcessing, setVoiceProcessing] = useState(false);
@@ -125,8 +134,8 @@ export function useRealtimeMicTranscription() {
         error?: string;
         tts_enabled?: boolean;
         message?: string;
-        voice_id?: string;
       },
+      playback?: { onAfterSpeaking?: () => void },
     ) => {
       const text = rawText.trim();
       const hasMp3 =
@@ -152,9 +161,15 @@ export function useRealtimeMicTranscription() {
       isAgentSpeakingRef.current = true;
       setIsAgentSpeaking(true);
 
+      const afterSpeaking = playback?.onAfterSpeaking;
+
       const finishSpeaking = () => {
         isAgentSpeakingRef.current = false;
         setIsAgentSpeaking(false);
+        if (afterSpeaking) {
+          afterSpeaking();
+          return;
+        }
         const sc = scribeRef.current;
         if (resumeAfter && micSessionActiveRef.current && sc) {
           connectWithTokenFetch(sc).catch((e) => {
@@ -238,11 +253,21 @@ export function useRealtimeMicTranscription() {
       setVoiceProcessing(true);
       setError(null);
       try {
+        const token = (await options?.getAccessToken?.()) ?? null;
+
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+
+        const transcriptUrl = `${base}/api/pm/voice/transcript?include_tts_audio=true`;
         const res = await fetch(
-          `${base}/api/pm/voice/transcript?include_tts_audio=true`,
+          transcriptUrl,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers,
             body: JSON.stringify({
               transcript: text,
               conversation: conversationRef.current,
@@ -252,6 +277,8 @@ export function useRealtimeMicTranscription() {
         const data = (await res.json()) as {
           detail?: string;
           result?: {
+            status?: string;
+            redirect_to?: string | null;
             spoken_reply?: string;
             tts?: {
               audio_base64?: string;
@@ -259,7 +286,6 @@ export function useRealtimeMicTranscription() {
               error?: string;
               tts_enabled?: boolean;
               message?: string;
-              voice_id?: string;
             };
           };
         };
@@ -273,19 +299,40 @@ export function useRealtimeMicTranscription() {
         if (process.env.NODE_ENV === "development") {
           console.log("tts payload", {
             enabled: data.result?.tts?.tts_enabled,
-            voiceId: data.result?.tts?.voice_id,
             hasAudio: Boolean(data.result?.tts?.audio_base64),
             error: data.result?.tts?.error,
             contentType: data.result?.tts?.content_type,
           });
         }
         const spoken = data.result?.spoken_reply ?? "";
+
+        const needsLoginRedirect =
+          data.result?.status === "login_required" ||
+          data.result?.redirect_to === "/login";
+        if (needsLoginRedirect && typeof window !== "undefined") {
+          sessionStorage.setItem(PM_PENDING_VOICE_TRANSCRIPT_KEY, text);
+        }
+
         conversationRef.current = [
           ...conversationRef.current,
           { role: "user", content: text },
           { role: "assistant", content: spoken },
         ];
-        playAssistantOutput(spoken, data.result?.tts);
+
+        setTypedText(spoken);
+
+        const postListenLoginRedirect =
+          needsLoginRedirect && typeof window !== "undefined"
+            ? () => {
+                window.setTimeout(() => {
+                  window.location.assign("/login");
+                }, 450);
+              }
+            : undefined;
+
+        playAssistantOutput(spoken, data.result?.tts, {
+          onAfterSpeaking: postListenLoginRedirect,
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Voice request failed";
         setError(msg);
@@ -293,7 +340,7 @@ export function useRealtimeMicTranscription() {
         setVoiceProcessing(false);
       }
     },
-    [playAssistantOutput],
+    [playAssistantOutput, options?.getAccessToken],
   );
 
   const enqueueCommitted = useCallback(

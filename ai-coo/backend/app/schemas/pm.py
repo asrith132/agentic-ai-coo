@@ -168,6 +168,16 @@ class VoiceConversationTurn(BaseModel):
     content: str = Field(..., min_length=1, max_length=8_000)
 
 
+class PublicPmChatRequest(BaseModel):
+    """Guest PM chat message (no auth; handled by deterministic guest_mode)."""
+
+    message: str = Field(
+        default="",
+        max_length=50_000,
+        description="User message while unauthenticated",
+    )
+
+
 class PmVoiceTranscriptRequest(BaseModel):
     """Voice / STT transcript sent to the PM intake endpoint (text-first MVP)."""
 

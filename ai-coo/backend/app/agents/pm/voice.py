@@ -23,6 +23,10 @@ from app.schemas.pm import FounderGoalInput, PmVoiceTranscriptResult
 
 logger = logging.getLogger(__name__)
 
+# Built-in ElevenLabs premade voice (Rachel). Used for TTS only — Scribe/STT does not use this.
+# Ignores ELEVENLABS_VOICE_ID in .env so you get a stable default (remove that line if unused).
+ELEVENLABS_DEFAULT_TTS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
+
 PM_VOICE_SYSTEM_PROMPT = """You are the planning intake assistant for an AI COO "PM Agent".
 The conversation may include prior turns: user messages are speech-to-text transcripts from the founder; assistant messages are your own earlier short spoken replies (what they heard). Use that context so follow-up answers make sense.
 
@@ -223,22 +227,21 @@ def maybe_generate_tts(
     Optional ElevenLabs TTS. Never raises.
 
     Returns None when ``reply_text`` is empty. Otherwise returns a dict with at least
-    ``tts_enabled``, ``voice_id``, and ``text``. On success with
-    ``include_audio_base64``, may include ``audio_base64`` and ``content_type``.
+    ``tts_enabled`` and ``text``. On success with ``include_audio_base64``, may
+    include ``audio_base64`` and ``content_type``. Voice is fixed server-side.
     """
     text = (reply_text or "").strip()
     if not text:
         return None
 
     key = (settings.elevenlabs_api_key or "").strip()
-    voice_id = (settings.elevenlabs_voice_id or "").strip()
+    voice_id = ELEVENLABS_DEFAULT_TTS_VOICE_ID
 
-    if not key or not voice_id:
+    if not key:
         return {
             "tts_enabled": False,
-            "voice_id": voice_id or None,
             "text": text,
-            "message": "Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID for synthesized audio.",
+            "message": "Set ELEVENLABS_API_KEY for synthesized audio.",
         }
 
     model_id = (settings.elevenlabs_tts_model_id or "").strip()
@@ -246,15 +249,13 @@ def maybe_generate_tts(
         model_id = "eleven_multilingual_v2"
 
     logger.info(
-        "TTS requested voice_id=%s model_id=%s include_audio=%s",
-        voice_id,
+        "TTS requested model_id=%s include_audio=%s",
         model_id,
         include_audio_base64,
     )
 
     out: dict[str, Any] = {
         "tts_enabled": True,
-        "voice_id": voice_id,
         "text": text,
     }
 
@@ -306,13 +307,10 @@ def maybe_generate_tts(
 
 def get_pm_tts_debug_info() -> dict[str, Any]:
     """
-    Resolved TTS settings plus optional ElevenLabs voice metadata (name, etc.).
-
-    Use GET /api/pm/voice/tts-debug to confirm which voice_id the server uses
-    versus the ElevenLabs dashboard.
+    TTS model + optional ElevenLabs voice name (no voice id exposed in the payload).
     """
     key = (settings.elevenlabs_api_key or "").strip()
-    voice_id = (settings.elevenlabs_voice_id or "").strip()
+    voice_id = ELEVENLABS_DEFAULT_TTS_VOICE_ID
     tts_model = (settings.elevenlabs_tts_model_id or "").strip()
     if not tts_model:
         tts_model = "eleven_multilingual_v2"
@@ -320,15 +318,13 @@ def get_pm_tts_debug_info() -> dict[str, Any]:
 
     out: dict[str, Any] = {
         "api_key_configured": bool(key),
-        "voice_id": voice_id or None,
+        "tts_voice": "default",
         "tts_model_id": tts_model,
         "scribe_model_id": scribe_model,
     }
 
-    if not key or not voice_id:
-        out["message"] = (
-            "Set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID to resolve voice name from API."
-        )
+    if not key:
+        out["message"] = "Set ELEVENLABS_API_KEY to enable TTS."
         return out
 
     try:
@@ -341,7 +337,6 @@ def get_pm_tts_debug_info() -> dict[str, Any]:
             data = resp.json()
             out["elevenlabs_voice"] = {
                 "name": data.get("name"),
-                "voice_id": data.get("voice_id"),
                 "category": data.get("category"),
             }
         else:
@@ -359,9 +354,8 @@ def get_pm_tts_debug_info() -> dict[str, Any]:
                 out["elevenlabs_voice_lookup"] = "failed_missing_voices_read"
                 out["hint"] = (
                     "Voice lookup needs the voices_read scope on your API key. "
-                    "The voice_id field above is still what TTS uses; add voices_read "
-                    "in ElevenLabs (Developers → API keys) if you want the name here, "
-                    "or compare that ID to your dashboard."
+                    "TTS still uses the built-in default voice; add voices_read in "
+                    "ElevenLabs (Developers → API keys) if you want the name here."
                 )
             else:
                 out["elevenlabs_error"] = f"HTTP {resp.status_code}: {snippet}".strip()
