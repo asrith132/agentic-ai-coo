@@ -70,7 +70,8 @@ class OutreachAgent(BaseAgent):
             system_prompt=(
                 "You are an expert startup outreach researcher. "
                 "Write a concise actionable brief with the headings: "
-                "'Who they are', 'What they care about', and 'Recommended angle'."
+                "'Who they are', 'What they care about', and 'Recommended angle'. "
+                "If contact information is missing, say it is unknown. Do not invent email addresses, company names, or titles."
             ),
             user_message=(
                 f"Based on this research on {name} at {company}, summarize: who they are, "
@@ -166,18 +167,36 @@ class OutreachAgent(BaseAgent):
     ) -> dict[str, Any]:
         self._ensure_context()
         ctx = self._global_context
-        queries = tools.build_prospect_search_queries(
-            company_name=ctx.company_profile.name,
+        query_plan = tools.build_contextual_discovery_queries(
             product_name=ctx.company_profile.product_name,
             product_description=ctx.company_profile.product_description,
+            key_features=ctx.company_profile.key_features,
             persona=ctx.target_customer.persona,
+            industry=ctx.target_customer.industry,
+            company_size=ctx.target_customer.company_size,
             pain_points=ctx.target_customer.pain_points,
+            active_priorities=ctx.business_state.active_priorities,
+            market_position=ctx.competitive_landscape.market_position,
             focus=focus,
         )
 
-        search_results: list[dict[str, str]] = []
-        for query in queries:
-            search_results.extend(tools.search_web(query, max_results=4))
+        reddit_results: list[dict[str, str]] = []
+        for query in query_plan["reddit"]:
+            reddit_results.extend(tools.search_reddit_posts(query, max_results=5))
+
+        profile_results: list[dict[str, str]] = []
+        for query in query_plan["profiles"]:
+            profile_results.extend(tools.search_google_profiles(query, max_results=5))
+
+        company_results: list[dict[str, str]] = []
+        for query in query_plan["company"]:
+            company_results.extend(tools.search_web(query, max_results=4))
+
+        search_results: list[dict[str, str]] = [
+            *reddit_results,
+            *profile_results,
+            *company_results,
+        ]
 
         if not search_results:
             raise ValueError("No search results found for prospect discovery")
@@ -198,15 +217,23 @@ Company context:
 - Pain points: {ctx.target_customer.pain_points}
 - Active priorities: {ctx.business_state.active_priorities}
 - Competitive position: {ctx.competitive_landscape.market_position}
+- Recent events: {ctx.recent_events[-5:]}
 - Discovery focus: {focus or 'best near-term outreach targets'}
 
 Rules:
 - Pick only prospects supported by the search evidence.
-- Prefer named people. If a real name is not supported by evidence, use a role-based placeholder like
-  "Head of Operations at Company" and set "name_unverified" to true.
+- Prefer named people with real evidence.
+- Never invent an email address.
+- Never invent a company name. If company is unclear, set it to "Unknown".
+- Never use synthetic placeholders like "Head of Operations at YC Seed-Stage SaaS Startup" as the stored name.
+- If a real person is not supported by evidence, skip them instead of fabricating identity fields.
 - Favor people who plausibly own the pain point and could buy, pilot, or partner.
+- Use Reddit evidence aggressively when someone is publicly describing the exact pain this company solves.
+- If the evidence only proves a Reddit username or social handle, keep the name as that real handle and do not invent a real name.
 - Explain exactly why this prospect is a fit for THIS company.
 - Do not output vague generic prospects.
+- Include the best reachable channel supported by evidence: email, reddit_dm, linkedin_dm, x_dm, or unknown.
+- If a profile URL is visible in the evidence, include it.
 
 Return valid JSON only with this shape:
 {{
@@ -215,8 +242,10 @@ Return valid JSON only with this shape:
       "name": "string",
       "company": "string",
       "role": "string",
-      "name_unverified": false,
       "contact_type": "{contact_type}",
+      "email": null,
+      "reachable_via": "unknown",
+      "profile_url": null,
       "why_fit": "string",
       "outreach_angle": "string",
       "evidence": ["string"],
@@ -245,6 +274,7 @@ Limit to {limit} prospects.
                 name=prospect["name"],
                 company=prospect["company"],
                 role=prospect.get("role"),
+                email=prospect.get("email"),
                 contact_type=prospect.get("contact_type", contact_type),
                 status="cold",
                 source="autonomous_discovery",
@@ -253,7 +283,8 @@ Limit to {limit} prospects.
                         "why_fit": prospect["why_fit"],
                         "outreach_angle": prospect["outreach_angle"],
                         "priority_score": prospect["priority_score"],
-                        "name_unverified": prospect.get("name_unverified", False),
+                        "reachable_via": prospect.get("reachable_via", "unknown"),
+                        "profile_url": prospect.get("profile_url"),
                         "evidence": prospect.get("evidence", []),
                         "search_results": search_results,
                     }
@@ -281,8 +312,11 @@ Limit to {limit} prospects.
                 enriched_prospects.append({**prospect, "contact_id": contact["id"]})
 
         return {
-            "queries": queries,
+            "queries": query_plan,
             "search_results": search_results,
+            "reddit_results": reddit_results,
+            "profile_results": profile_results,
+            "company_results": company_results,
             "prospects": enriched_prospects,
             "saved_contacts": saved_contacts,
         }
@@ -558,13 +592,17 @@ Limit to {limit} prospects.
         for prospect in prospects[:limit]:
             if not prospect.get("name") or not prospect.get("company"):
                 continue
+            if self._looks_like_placeholder_identity(prospect["name"], prospect["company"]):
+                continue
             cleaned.append(
                 {
                     "name": prospect["name"],
                     "company": prospect["company"],
                     "role": prospect.get("role", ""),
-                    "name_unverified": bool(prospect.get("name_unverified", False)),
                     "contact_type": prospect.get("contact_type", "customer"),
+                    "email": prospect.get("email"),
+                    "reachable_via": prospect.get("reachable_via", "unknown"),
+                    "profile_url": prospect.get("profile_url"),
                     "why_fit": prospect.get("why_fit", ""),
                     "outreach_angle": prospect.get("outreach_angle", ""),
                     "evidence": prospect.get("evidence", []),
@@ -574,6 +612,29 @@ Limit to {limit} prospects.
         if not cleaned:
             raise ValueError("Prospect discovery returned no valid prospects")
         return cleaned
+
+    def _looks_like_placeholder_identity(self, name: str, company: str) -> bool:
+        lowered_name = name.lower()
+        lowered_company = company.lower()
+        bad_name_markers = [
+            "head of ",
+            "founder at ",
+            "operator at ",
+            "unknown (",
+            "unknown linkedin",
+        ]
+        bad_company_markers = [
+            "unknown (",
+            "y combinator portfolio",
+            "seed-stage",
+            "1–10 employees",
+            "1-10 employees",
+        ]
+        if lowered_name.startswith("u/") or lowered_name.startswith("@"):
+            return False
+        return any(marker in lowered_name for marker in bad_name_markers) or any(
+            marker in lowered_company for marker in bad_company_markers
+        )
 
     def _classify_reply_sentiment(self, reply_body: str) -> str:
         result = self.llm_chat(

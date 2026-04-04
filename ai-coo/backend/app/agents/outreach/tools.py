@@ -28,6 +28,40 @@ def _extract_email(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def _extract_social_profiles(text: str) -> list[dict[str, str]]:
+    profiles: list[dict[str, str]] = []
+    patterns = [
+        ("reddit", r"https?://(?:www\.)?reddit\.com/[^\s)]+"),
+        ("linkedin", r"https?://(?:www\.)?linkedin\.com/[^\s)]+"),
+        ("x", r"https?://(?:www\.)?(?:twitter\.com|x\.com)/[^\s)]+"),
+        ("github", r"https?://(?:www\.)?github\.com/[^\s)]+"),
+    ]
+    for platform, pattern in patterns:
+        for match in re.finditer(pattern, text):
+            profiles.append({"platform": platform, "url": match.group(0)})
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict[str, str]] = []
+    for profile in profiles:
+        key = (profile["platform"], profile["url"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(profile)
+    return deduped
+
+
+def profile_platform_from_url(url: str) -> str:
+    lower = url.lower()
+    if "reddit.com" in lower:
+        return "reddit"
+    if "linkedin.com" in lower:
+        return "linkedin"
+    if "twitter.com" in lower or "x.com" in lower:
+        return "x"
+    if "github.com" in lower:
+        return "github"
+    return "web"
+
+
 def _company_domain(company: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", "", company.lower())
     return f"{normalized}.com" if normalized else ""
@@ -46,6 +80,12 @@ def _fetch_url(url: str, timeout: float = 6.0) -> str | None:
     except Exception as exc:
         logger.info("Outreach fetch failed for %s: %s", url, exc)
         return None
+
+
+def _extract_title(html: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
+    title = soup.title.string.strip() if soup.title and soup.title.string else ""
+    return title[:300]
 
 
 def search_web(query: str, max_results: int = 5) -> list[dict[str, str]]:
@@ -74,6 +114,130 @@ def search_web(query: str, max_results: int = 5) -> list[dict[str, str]]:
     return results
 
 
+def search_google_profiles(query: str, max_results: int = 5) -> list[dict[str, str]]:
+    """
+    Search Google result pages for public profile URLs. This is still read-only and
+    only used as evidence discovery, not authenticated scraping.
+    """
+    encoded = urllib.parse.quote_plus(query)
+    html = _fetch_url(f"https://www.google.com/search?q={encoded}&num={max_results}", timeout=8.0)
+    if not html:
+        return []
+
+    soup = BeautifulSoup(html, "lxml")
+    text = _strip_html(html, max_chars=6000)
+    profiles = _extract_social_profiles(text)
+    results: list[dict[str, str]] = []
+    for profile in profiles[:max_results]:
+        results.append(
+            {
+                "title": f"{profile['platform']} profile",
+                "url": profile["url"],
+                "snippet": f"Public {profile['platform']} profile discovered for query: {query}",
+                "query": query,
+                "source_type": "profile_search",
+            }
+        )
+    return results
+
+
+def search_reddit_posts(query: str, max_results: int = 8) -> list[dict[str, str]]:
+    """
+    Search Reddit's public JSON endpoint for relevant posts.
+    """
+    encoded = urllib.parse.quote_plus(query)
+    url = f"https://www.reddit.com/search.json?q={encoded}&sort=relevance&limit={max_results}"
+    try:
+        with httpx.Client(
+            timeout=8.0,
+            follow_redirects=True,
+            headers={"User-Agent": "AI-COO-OutreachAgent/1.0"},
+        ) as client:
+            response = client.get(url)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:
+        logger.info("Reddit search failed for %s: %s", query, exc)
+        return []
+
+    results: list[dict[str, str]] = []
+    for child in payload.get("data", {}).get("children", []):
+        data = child.get("data", {})
+        permalink = data.get("permalink", "")
+        full_url = f"https://www.reddit.com{permalink}" if permalink else ""
+        results.append(
+            {
+                "title": data.get("title", ""),
+                "url": full_url,
+                "snippet": data.get("selftext", "")[:600],
+                "query": query,
+                "author": data.get("author", ""),
+                "subreddit": data.get("subreddit", ""),
+                "source_type": "reddit",
+            }
+        )
+    return results
+
+
+def enrich_profile_url(url: str) -> dict[str, Any]:
+    html = _fetch_url(url, timeout=8.0)
+    platform = profile_platform_from_url(url)
+    default_channel = f"{platform}_dm" if platform in {"reddit", "linkedin", "x"} else "unknown"
+    if not html:
+        return {
+            "url": url,
+            "platform": platform,
+            "title": "",
+            "summary": "",
+            "emails_found": [],
+            "social_profiles": [],
+            "reachable_via": [default_channel] if default_channel != "unknown" else ["unknown"],
+        }
+
+    summary = _strip_html(html, max_chars=1800)
+    email = _extract_email(summary)
+    socials = _extract_social_profiles(summary)
+    reachable = ["email"] if email else []
+    if default_channel != "unknown":
+        reachable.append(default_channel)
+    return {
+        "url": url,
+        "platform": platform,
+        "title": _extract_title(html),
+        "summary": summary,
+        "emails_found": [email] if email else [],
+        "social_profiles": socials,
+        "reachable_via": reachable or ["unknown"],
+    }
+
+
+def enrich_company_pages(company: str) -> dict[str, Any]:
+    domain = _company_domain(company)
+    if not domain:
+        return {"company": company, "domain": None, "pages": [], "summary": ""}
+
+    pages: list[dict[str, str]] = []
+    for suffix, kind in [("", "homepage"), ("/about", "about"), ("/blog", "blog")]:
+        url = f"https://{domain}{suffix}"
+        html = _fetch_url(url, timeout=8.0)
+        if not html:
+            continue
+        pages.append(
+            {
+                "kind": kind,
+                "url": url,
+                "title": _extract_title(html),
+                "summary": _strip_html(html, max_chars=1800),
+            }
+        )
+    return {
+        "company": company,
+        "domain": domain,
+        "pages": pages,
+        "summary": "\n\n".join(page["summary"] for page in pages)[:4000],
+    }
+
+
 def _strip_html(html: str, max_chars: int = 2500) -> str:
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(["script", "style", "noscript"]):
@@ -90,6 +254,14 @@ def _research_urls(name: str, company: str) -> list[dict[str, str]]:
         {
             "kind": "linkedin_search",
             "url": f"https://www.google.com/search?q={q_name}+{q_company}+LinkedIn",
+        },
+        {
+            "kind": "reddit_search",
+            "url": f"https://www.google.com/search?q={q_name}+{q_company}+site%3Areddit.com",
+        },
+        {
+            "kind": "x_search",
+            "url": f"https://www.google.com/search?q={q_name}+{q_company}+site%3Ax.com+OR+site%3Atwitter.com",
         },
         {
             "kind": "company_news_search",
@@ -118,10 +290,12 @@ def build_research_cache(name: str, company: str, context: str | None = None) ->
             }
         )
 
-    domain = _company_domain(company)
-    email = f"{name.split()[0].lower()}@{domain}" if name.strip() and domain else None
-    role = "Unknown"
-    inferred_tenure = "Unknown"
+    raw_text = "\n\n".join(p["excerpt"] for p in pages if p.get("excerpt"))
+    social_profiles = _extract_social_profiles(raw_text)
+    emails_found = [_extract_email(p["excerpt"]) for p in pages]
+    email = next((e for e in emails_found if e), None)
+    role = None
+    inferred_tenure = None
     if context:
         lower_context = context.lower()
         if "investor" in lower_context:
@@ -145,6 +319,10 @@ def build_research_cache(name: str, company: str, context: str | None = None) ->
         "linkedin_summary": summary_parts[0] if summary_parts else "",
         "recent_posts": [p["excerpt"] for p in pages if "blog" in p["kind"]][:2],
         "company_news": [p["excerpt"] for p in pages if "news" in p["kind"]][:2],
+        "social_profiles": social_profiles,
+        "reachable_via": (
+            ["email"] if email else []
+        ) + [f"{profile['platform']}_dm" for profile in social_profiles],
         "sources": pages,
         "context": context or "",
         "raw_summary": snippets,
@@ -175,8 +353,79 @@ def build_prospect_search_queries(
         f'{product_desc} founder interview productivity workflow',
         f'{persona_anchor} teams complaining about {pain_anchor}',
         f'{focus_anchor} startup operations leader developer productivity',
+        f'{pain_anchor} reddit founder startup',
+        f'{pain_anchor} x.com founder operator startup',
     ]
     return queries[:6]
+
+
+def build_contextual_discovery_queries(
+    *,
+    product_name: str,
+    product_description: str,
+    key_features: list[str],
+    persona: str,
+    industry: str,
+    company_size: str,
+    pain_points: list[str],
+    active_priorities: list[str],
+    market_position: str,
+    focus: str | None = None,
+) -> dict[str, list[str]]:
+    feature_anchor = key_features[0] if key_features else (product_name or "startup tool")
+    pain_anchor = pain_points[0] if pain_points else "manual operational work"
+    persona_anchor = persona or "startup founder or operator"
+    industry_anchor = industry or "startup SaaS"
+    size_anchor = company_size or "small team"
+    priority_anchor = active_priorities[0] if active_priorities else "operational efficiency"
+    position_anchor = market_position or product_description or "AI operations software"
+    focus_anchor = focus or "high-intent prospects"
+
+    reddit_queries = [
+        f"{pain_anchor} subreddit startup founder",
+        f"{priority_anchor} reddit founder ops",
+        f"{feature_anchor} reddit workflow pain",
+        f"{industry_anchor} reddit operator automation",
+        f"{focus_anchor} reddit startup pain",
+    ]
+    profile_queries = [
+        f'{persona_anchor} {industry_anchor} linkedin "{pain_anchor}"',
+        f'{persona_anchor} "{priority_anchor}" x.com',
+        f'{persona_anchor} "{feature_anchor}" linkedin',
+        f'{size_anchor} founder "{pain_anchor}" twitter',
+        f'"{position_anchor}" founder linkedin',
+    ]
+    company_queries = [
+        f'{industry_anchor} startup "{pain_anchor}"',
+        f'{industry_anchor} companies hiring "{priority_anchor}"',
+        f'{industry_anchor} founder interview "{feature_anchor}"',
+    ]
+    return {
+        "reddit": reddit_queries[:4],
+        "profiles": profile_queries[:4],
+        "company": company_queries[:3],
+    }
+
+
+def choose_best_channel(contact: dict[str, Any]) -> str:
+    cache = contact.get("research_cache") or {}
+    reachable: list[str] = []
+    if isinstance(cache.get("reachable_via"), list):
+        reachable.extend(cache["reachable_via"])
+    discovery = cache.get("discovery") or {}
+    if discovery.get("reachable_via"):
+        reachable.append(discovery["reachable_via"])
+    for profile in cache.get("social_profiles") or []:
+        platform = profile.get("platform")
+        if platform in {"reddit", "linkedin", "x"}:
+            reachable.append(f"{platform}_dm")
+    if contact.get("email"):
+        reachable.append("email")
+
+    for channel in ["email", "linkedin_dm", "reddit_dm", "x_dm"]:
+        if channel in reachable:
+            return channel
+    return "unknown"
 
 
 def get_contact(contact_id: str) -> dict[str, Any] | None:
