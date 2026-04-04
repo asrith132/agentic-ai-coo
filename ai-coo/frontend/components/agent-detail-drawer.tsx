@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Agent, AgentStatus } from '@/lib/mock-data';
 import { cn } from '@/lib/utils';
+import { AgentIcon } from '@/lib/agent-visuals';
 
 interface AgentDetailDrawerProps {
   agent: Agent | null;
@@ -57,7 +58,7 @@ export function AgentDetailDrawer({ agent, open, onClose }: AgentDetailDrawerPro
         <SheetHeader className="p-5 pb-4 border-b border-border/40">
           <div className="flex items-center gap-3.5">
             <div className="w-12 h-12 rounded-xl bg-secondary/80 border border-border/60 flex items-center justify-center text-sm font-bold text-muted-foreground font-mono shrink-0">
-              {agent.shortName}
+              <AgentIcon agentId={agent.id} className="w-5 h-5" strokeWidth={2.1} />
             </div>
             <div className="min-w-0">
               <SheetTitle className="text-base font-semibold text-foreground" style={{ fontFamily: 'var(--font-heading)' }}>

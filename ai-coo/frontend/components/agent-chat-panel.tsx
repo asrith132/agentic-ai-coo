@@ -6,6 +6,7 @@ import { Agent, AgentStatus } from '@/lib/mock-data';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { AgentIcon, agentColors } from '@/lib/agent-visuals';
 
 interface AgentChatPanelProps {
   agent: Agent | null;
@@ -18,17 +19,6 @@ interface Message {
   role: 'user' | 'agent';
   content: string;
 }
-
-const agentColors: Record<string, string> = {
-  'product-manager': '#86EFAC',
-  'engineer':        '#93C5FD',
-  'research':        '#C4B5FD',
-  'marketing':       '#FDBA74',
-  'legal':           '#5EEAD4',
-  'finance':         '#FCD34D',
-  'outreach-agent':  '#F9A8D4',
-  'meeting-agent':   '#A5B4FC',
-};
 
 function hexToRgb(hex: string) {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -156,7 +146,7 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
                 color: color,
               }}
             >
-              {agent.shortName}
+              <AgentIcon agentId={agent.id} className="w-3.5 h-3.5" strokeWidth={2.1} />
             </div>
             <div className="min-w-0">
               <span className="text-sm font-semibold text-foreground/90 leading-none" style={{ fontFamily: 'var(--font-heading)' }}>
@@ -189,7 +179,7 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
                       color: color,
                     }}
                   >
-                    {agent.shortName}
+                    <AgentIcon agentId={agent.id} className="w-3.5 h-3.5" strokeWidth={2.1} />
                   </div>
                 )}
 
@@ -280,7 +270,7 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
                   color: color,
                 }}
               >
-                {agent.shortName}
+                <AgentIcon agentId={agent.id} className="w-5 h-5" strokeWidth={2.1} />
               </div>
               <div className="min-w-0">
                 <p className="font-semibold text-sm text-foreground/90 leading-tight" style={{ fontFamily: 'var(--font-heading)' }}>
