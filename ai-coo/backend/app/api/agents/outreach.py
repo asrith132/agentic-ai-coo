@@ -1,124 +1,124 @@
 """
 api/agents/outreach.py — /api/outreach/* routes
-
-Routes:
-  POST /api/outreach/research      — Research a contact (name + company → enriched profile)
-  POST /api/outreach/draft         — Draft a personalized cold email for a contact
-  POST /api/outreach/send/{id}     — Send a previously drafted and approved email
-  GET  /api/outreach/contacts      — List all contacts and their pipeline status
-  GET  /api/outreach/messages      — Full message history (sent + received)
-  POST /api/outreach/run           — Manually trigger the Outreach agent
-  GET  /api/outreach/status        — Last run status
 """
 
 from __future__ import annotations
-from typing import Any
 
-from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
+
+from app.agents.outreach.agent import OutreachAgent
+from app.agents.outreach import tools
 
 router = APIRouter(prefix="/api/outreach", tags=["Outreach"])
-
-_NOT_IMPLEMENTED = {"status": "not_implemented", "message": "Implemented in Prompt 4"}
 
 
 class ResearchContactRequest(BaseModel):
     name: str
     company: str
-    linkedin_url: str | None = None
+    context: str | None = None
+    source: str = "manual"
+    status: str = "cold"
+    contact_type: str = "customer"
 
 
 class DraftEmailRequest(BaseModel):
-    contact_id: str | None = None
-    name: str | None = None
-    company: str | None = None
-    context: str | None = None   # optional extra context for personalization
+    contact_id: str
+    email_type: str = Field(pattern="^(cold|follow_up|investor|partnership)$")
+    custom_notes: str | None = None
 
 
-@router.post(
-    "/research",
-    summary="Research a contact",
-)
+class DiscoverContactsRequest(BaseModel):
+    focus: str | None = None
+    limit: int = Field(default=5, ge=1, le=10)
+    contact_type: str = "customer"
+    auto_research: bool = True
+
+
+@router.post("/research", summary="Research a contact")
 def research_contact(body: ResearchContactRequest):
-    """
-    Look up a contact by name + company and return an enriched profile
-    (role, LinkedIn, recent activity, mutual signals).
+    agent = OutreachAgent()
+    try:
+        return agent.research_contact(
+            name=body.name,
+            company=body.company,
+            context=body.context,
+            source=body.source,
+            status=body.status,
+            contact_type=body.contact_type,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    Used before drafting an email to personalize the outreach.
-    Triggers the Outreach agent's scraping + enrichment tools.
-    """
-    # TODO (Prompt 4): run enrichment tools and return structured profile
-    return _NOT_IMPLEMENTED
 
-
-@router.post(
-    "/draft",
-    summary="Draft a personalized cold email",
-)
+@router.post("/draft", summary="Draft a personalized email")
 def draft_email(body: DraftEmailRequest):
-    """
-    Use the LLM + brand voice + ICP data to draft a personalized cold email.
-    The draft is stored in the outreach_emails table with status="draft" and
-    an approval record is created for the user to review before sending.
-    """
-    # TODO (Prompt 4): call OutreachAgent to draft and create approval
-    return _NOT_IMPLEMENTED
+    agent = OutreachAgent()
+    try:
+        return agent.draft_email(
+            contact_id=body.contact_id,
+            email_type=body.email_type,
+            custom_notes=body.custom_notes,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post(
-    "/send/{email_id}",
-    summary="Send an approved email",
-)
-def send_email(email_id: str):
-    """
-    Send a previously drafted email that has been approved.
-    Updates the email record status to "sent" and records the send timestamp.
-    Raises 409 if the email is not in "approved" status.
-    """
-    # TODO (Prompt 4): verify approval status, call Gmail send tool
-    return _NOT_IMPLEMENTED
+@router.post("/discover", summary="Discover high-fit contacts autonomously")
+def discover_contacts(body: DiscoverContactsRequest):
+    agent = OutreachAgent()
+    try:
+        return agent.discover_contacts(
+            focus=body.focus,
+            limit=body.limit,
+            contact_type=body.contact_type,
+            auto_research=body.auto_research,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get(
-    "/contacts",
-    summary="List all contacts",
-)
+@router.post("/send/{message_id}", summary="Send an approved email")
+def send_email(message_id: str):
+    agent = OutreachAgent()
+    try:
+        return agent.send_message(message_id=message_id)
+    except ValueError as exc:
+        if "not approved" in str(exc) or "pending" in str(exc):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/contacts", summary="List all contacts")
 def list_contacts(
-    status: str | None = Query(default=None, description="Filter by status: new|contacted|replied|booked|dead"),
+    status: str | None = Query(default=None),
     limit: int = Query(default=50, le=200),
 ):
-    """
-    Return all contacts with their current pipeline status, last contact
-    date, and company info. Used by the dashboard CRM view.
-    """
-    # TODO (Prompt 4): query outreach_leads table
-    return _NOT_IMPLEMENTED
+    return tools.list_contacts(status=status, limit=limit)
 
 
-@router.get(
-    "/messages",
-    summary="Message history",
-)
+@router.get("/messages", summary="Message history")
 def list_messages(
     contact_id: str | None = Query(default=None),
     limit: int = Query(default=50, le=200),
 ):
-    """
-    Return the full email thread history (sent + received), optionally
-    filtered by contact. Used by the dashboard conversation view.
-    """
-    # TODO (Prompt 4): query outreach_emails table
-    return _NOT_IMPLEMENTED
+    return tools.list_messages(contact_id=contact_id, limit=limit)
 
 
 @router.post("/run", summary="Manually trigger the Outreach agent")
 def run_outreach():
-    """Enqueue a manual run of the Outreach agent via Celery."""
     from app.api.agents._task_dispatch import dispatch_agent_run
+
     return dispatch_agent_run("outreach", {"type": "user_request", "user_input": "manual run"})
 
 
 @router.get("/status", summary="Outreach agent last run status")
 def outreach_status():
-    """Return last run timestamp and pipeline summary."""
-    return {"agent": "outreach", "status": "idle", "last_run": None}
+    return {
+        "agent": "outreach",
+        "status": "ready",
+        "contacts": len(tools.list_contacts(limit=200)),
+        "messages": len(tools.list_messages(limit=200)),
+    }
