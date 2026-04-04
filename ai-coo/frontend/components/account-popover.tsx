@@ -38,9 +38,9 @@ export function AccountPopover() {
         <button
           type="button"
           aria-label="Open account"
-          className="w-9 h-9 rounded-lg bg-secondary/50 hover:bg-secondary flex items-center justify-center transition-colors duration-150 cursor-pointer"
+          className="w-9 h-9 rounded-lg bg-white/8 hover:bg-white/15 flex items-center justify-center transition-colors duration-150 cursor-pointer"
         >
-          <User className="w-4 h-4" />
+          <User className="w-4 h-4 text-white" />
         </button>
       </PopoverTrigger>
 

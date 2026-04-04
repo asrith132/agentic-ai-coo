@@ -153,8 +153,8 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
   return (
     <StarsBackground
       className="min-h-screen relative isolate"
-      variant={isDark ? "dark" : "light"}
-      speed={isDark ? 50 : 80}
+      variant="dark"
+      speed={isDark ? 50 : 65}
     >
       <div
         className={cn(
@@ -165,33 +165,33 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
           width: sidebarOpen ? 'calc(100% - 300px)' : '100%',
         }}
       >
-        {/* Top nav */}
-        <header className="sticky top-0 z-30 border-b border-border/20 bg-background/5 backdrop-blur-xl relative">
+        {/* Top nav — always dark regardless of theme toggle */}
+        <header className="dark sticky top-0 z-30 border-b border-white/[0.06] bg-[#0a0a0a]/80 backdrop-blur-xl relative">
           <div className="relative flex items-center px-4 h-13">
             {/* Left */}
             <div className="absolute left-4 top-1/2 -translate-y-1/2">
               <button
                 onClick={() => setSidebarOpen(true)}
                 aria-label="Open control panel"
-                className="w-9 h-9 rounded-lg bg-secondary/50 hover:bg-secondary flex items-center justify-center transition-colors duration-150 cursor-pointer"
+                className="w-9 h-9 rounded-lg bg-white/8 hover:bg-white/15 flex items-center justify-center transition-colors duration-150 cursor-pointer"
               >
-                <Menu className="w-4 h-4" />
+                <Menu className="w-4 h-4 text-white" />
               </button>
             </div>
 
             {/* Center wordmark */}
             <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-2">
               <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-4 h-4">
-                <circle cx="8" cy="8" r="7.2" stroke="currentColor" strokeOpacity="0.15" strokeWidth="1" />
-                <circle cx="8" cy="2.5" r="1.5" className="fill-primary" />
-                <circle cx="13.5" cy="5.5" r="1.2" className="fill-primary/60" />
-                <circle cx="13.5" cy="10.5" r="1.2" className="fill-primary/40" />
-                <circle cx="8" cy="13.5" r="1.5" className="fill-primary/60" />
-                <circle cx="2.5" cy="10.5" r="1.2" className="fill-primary/40" />
-                <circle cx="2.5" cy="5.5" r="1.2" className="fill-primary/60" />
-                <circle cx="8" cy="8" r="2" className="fill-primary" />
+                <circle cx="8" cy="8" r="7.2" stroke="white" strokeOpacity="0.15" strokeWidth="1" />
+                <circle cx="8" cy="2.5" r="1.5" fill="#4ade80" />
+                <circle cx="13.5" cy="5.5" r="1.2" fill="#4ade80" fillOpacity="0.6" />
+                <circle cx="13.5" cy="10.5" r="1.2" fill="#4ade80" fillOpacity="0.4" />
+                <circle cx="8" cy="13.5" r="1.5" fill="#4ade80" fillOpacity="0.6" />
+                <circle cx="2.5" cy="10.5" r="1.2" fill="#4ade80" fillOpacity="0.4" />
+                <circle cx="2.5" cy="5.5" r="1.2" fill="#4ade80" fillOpacity="0.6" />
+                <circle cx="8" cy="8" r="2" fill="#4ade80" />
               </svg>
-              <span className="text-sm font-semibold tracking-wide" style={{ fontFamily: 'var(--font-heading)' }}>
+              <span className="text-sm font-semibold tracking-wide text-white/90" style={{ fontFamily: 'var(--font-heading)' }}>
                 orchestrate
               </span>
             </div>
@@ -199,18 +199,18 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
             {/* Right */}
             <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
               <NotificationsPopover onViewAll={onOpenNotifications} />
-              <AnimatedThemeToggler className="w-9 h-9 rounded-lg bg-secondary/50 hover:bg-secondary flex items-center justify-center transition-colors duration-150 cursor-pointer [&_svg]:w-4 [&_svg]:h-4" />
+              <AnimatedThemeToggler className="w-9 h-9 rounded-lg bg-white/8 hover:bg-white/15 flex items-center justify-center transition-colors duration-150 cursor-pointer [&_svg]:w-4 [&_svg]:h-4 [&_svg]:text-white" />
               <AccountPopover />
             </div>
           </div>
 
           {/* Status bar */}
           {(thinkingCount > 0 || blockedCount > 0) && (
-            <div className="px-4 py-1.5 border-t border-border/20 flex items-center gap-4">
+            <div className="px-4 py-1.5 border-t border-white/[0.06] flex items-center gap-4">
               {thinkingCount > 0 && (
                 <div className="flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="text-[11px] text-white/50">
                     {thinkingCount} agent{thinkingCount > 1 ? 's' : ''} thinking
                   </span>
                 </div>
@@ -218,7 +218,7 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
               {blockedCount > 0 && (
                 <div className="flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-destructive" />
-                  <span className="text-[11px] text-muted-foreground">
+                  <span className="text-[11px] text-white/50">
                     {blockedCount} blocked
                   </span>
                 </div>
@@ -247,6 +247,7 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
                       agent={agent}
                       onClick={() => handleAgentClick(agent)}
                       className="aspect-square w-[min(220px,20vw)]"
+                      isPlanetMode={!isDark}
                     />
                   </div>
                 </div>
@@ -261,6 +262,7 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
                   agent={centerAgent}
                   onClick={() => handleAgentClick(centerAgent)}
                   className="aspect-square w-[min(228px,20.5vw)]"
+                  isPlanetMode={!isDark}
                 />
               </div>
             </div>

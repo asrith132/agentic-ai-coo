@@ -112,9 +112,9 @@ export function NotificationsPopover({ onViewAll }: NotificationsPopoverProps) {
         <button
           type="button"
           aria-label="Open notifications"
-          className="relative w-9 h-9 rounded-lg bg-secondary/50 hover:bg-secondary flex items-center justify-center transition-colors duration-150 cursor-pointer"
+          className="relative w-9 h-9 rounded-lg bg-white/8 hover:bg-white/15 flex items-center justify-center transition-colors duration-150 cursor-pointer"
         >
-          <Bell className="w-4 h-4" />
+          <Bell className="w-4 h-4 text-white" />
           {unreadCount > 0 && (
             <Badge className="absolute -top-1.5 left-full min-w-5 -translate-x-1/2 px-1 py-0 text-[10px]">
               {unreadCount > 99 ? '99+' : unreadCount}
