@@ -154,3 +154,50 @@ class CompletePmTaskRequest(BaseModel):
         default=None,
         description="Optional note echoed in the response (not persisted unless a column is added later).",
     )
+
+
+VoicePlanStatusLiteral = Literal["needs_clarification", "ready_to_plan"]
+
+
+class VoiceConversationTurn(BaseModel):
+    """One turn in a PM voice session (user = STT text, assistant = prior spoken replies)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=8_000)
+
+
+class PmVoiceTranscriptRequest(BaseModel):
+    """Voice / STT transcript sent to the PM intake endpoint (text-first MVP)."""
+
+    transcript: str = Field(
+        ...,
+        min_length=1,
+        max_length=50_000,
+        description="Transcript text from client-side STT or future streaming recognition",
+    )
+    conversation: list[VoiceConversationTurn] = Field(
+        default_factory=list,
+        description="Prior turns for multi-turn clarification (max 40 applied server-side)",
+        max_length=40,
+    )
+
+
+class PmVoiceTranscriptResult(BaseModel):
+    """Structured result after Claude interprets a PM voice transcript."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: VoicePlanStatusLiteral
+    goal: str | None = None
+    deadline: date | None = None
+    constraints: list[str] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list)
+    priority_hint: Literal["low", "medium", "high", "critical"] = "medium"
+    notes: str | None = None
+    clarification_questions: list[str] = Field(default_factory=list)
+    spoken_reply: str = Field(
+        default="",
+        description="Short line for TTS or UI",
+    )

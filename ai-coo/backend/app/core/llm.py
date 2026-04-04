@@ -99,6 +99,35 @@ class LLMClient:
             raise ValueError(f"Expected text response, got: {block.type}")
         return block.text
 
+    def chat_conversation(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, str]],
+        temperature: float = 0.2,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+    ) -> str:
+        """
+        Multi-turn Messages API call. ``messages`` are Anthropic-shaped dicts with
+        ``role`` in (``user``, ``assistant``) and ``content`` str. Must be non-empty.
+        Concatenates all text blocks from the assistant turn.
+        """
+        if not messages:
+            raise ValueError("messages must be non-empty")
+        response = self._call(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=messages,
+            temperature=temperature,
+        )
+        text_parts: list[str] = []
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+        if not text_parts:
+            raise ValueError("Expected at least one text block from Claude")
+        return "".join(text_parts)
+
     def chat_with_tools(
         self,
         system_prompt: str,

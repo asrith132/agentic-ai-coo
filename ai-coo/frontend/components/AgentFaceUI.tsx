@@ -167,30 +167,6 @@ function MinimalLogo() {
   );
 }
 
-function AgentSpeakingToggle({
-  agentSpeaking,
-  setAgentSpeaking,
-}: {
-  agentSpeaking: boolean;
-  setAgentSpeaking: React.Dispatch<React.SetStateAction<boolean>>;
-}) {
-  return (
-    <div className="absolute right-4 top-4 z-30 sm:right-6 sm:top-6">
-      <button
-        type="button"
-        onClick={() => setAgentSpeaking((v) => !v)}
-        className={`rounded-full border px-3 py-1.5 text-xs tracking-wide backdrop-blur-md transition ${
-          agentSpeaking
-            ? "border-orange-200/30 bg-orange-300/10 text-orange-100 shadow-[0_0_20px_rgba(255,170,90,0.12)]"
-            : "border-white/10 bg-white/[0.04] text-white/70"
-        }`}
-      >
-        Agent speaking {agentSpeaking ? "on" : "off"}
-      </button>
-    </div>
-  );
-}
-
 function ChatBar({
   listening,
   value,
@@ -274,26 +250,29 @@ function ChatBar({
 }
 
 export default function AgentFaceUI() {
-  const [agentSpeaking, setAgentSpeaking] = useState(false);
   const [showLogo, setShowLogo] = useState(true);
 
   const {
     displayText,
     isListening: micListening,
-    status: micStatus,
     error: micError,
+    voiceProcessing,
+    isAgentSpeaking,
     startListening,
     stopListening,
     setTranscriptFromTyping,
+    micBusy,
   } = useRealtimeMicTranscription();
 
-  const mood: EyeMood = micListening
-    ? "listening"
-    : agentSpeaking
+  const mood: EyeMood = voiceProcessing
+    ? "thinking"
+    : isAgentSpeaking
       ? "thinking"
-      : "listening";
-  const listening = !agentSpeaking || micListening;
-  const micBusy = micStatus === "connecting";
+      : micListening
+        ? "listening"
+        : "idle";
+
+  const listening = micListening || isAgentSpeaking;
 
   useEffect(() => {
     const id = window.setTimeout(() => {
@@ -325,8 +304,8 @@ export default function AgentFaceUI() {
             <div className="absolute inset-0 z-0 overflow-hidden">
               <motion.div
                 animate={{
-                  opacity: agentSpeaking ? 0.4 : 0,
-                  scale: agentSpeaking ? 2.8 : 0.985,
+                  opacity: isAgentSpeaking ? 0.4 : 0,
+                  scale: isAgentSpeaking ? 2.8 : 0.985,
                 }}
                 transition={{ duration: 0.35, ease: "easeInOut" }}
                 className="absolute inset-0"
@@ -334,11 +313,6 @@ export default function AgentFaceUI() {
                 <RippleComponent />
               </motion.div>
             </div>
-
-            <AgentSpeakingToggle
-              agentSpeaking={agentSpeaking}
-              setAgentSpeaking={setAgentSpeaking}
-            />
 
             <div className="relative z-10 flex min-h-screen flex-col items-center justify-between px-6 py-10 sm:px-8 sm:py-12">
               <div />

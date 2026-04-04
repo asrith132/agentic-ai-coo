@@ -14,6 +14,9 @@ Routes:
   POST  /api/pm/tasks/{task_id}/complete — done + dependency sync + reprioritize + milestone rollup
   POST  /api/pm/tasks/{task_id}/complete-for/{agent_name} — same, with target_agent validation
   GET   /api/pm/tasks/{task_id}/activity — Task lifecycle activity log (newest first)
+  POST  /api/pm/voice/transcript — Voice intake: transcript → Claude → PM fields + optional TTS
+  GET   /api/pm/voice/scribe-token — Single-use token for browser ElevenLabs realtime STT
+  GET   /api/pm/voice/tts-debug — Resolved TTS voice_id/model + ElevenLabs voice name (debug)
   GET   /api/pm/tasks              — Task backlog sorted by priority
   POST  /api/pm/tasks              — Create a task manually
   PATCH /api/pm/tasks/{id}         — Update task status or fields
@@ -35,6 +38,12 @@ from app.agents.pm.repository import (
     save_decomposed_plan_to_supabase,
     start_pm_task,
 )
+from app.agents.pm.voice import (
+    create_scribe_single_use_token,
+    get_pm_tts_debug_info,
+    process_pm_voice_transcript,
+)
+from app.config import settings
 from app.agents.pm.tools import (
     PmTaskCompletionRefused,
     apply_feature_shipped_event,
@@ -52,6 +61,7 @@ from app.schemas.pm import (
     CompletePmTaskRequest,
     FeatureShippedPayload,
     FounderGoalInput,
+    PmVoiceTranscriptRequest,
     ReprioritizeRequest,
 )
 
@@ -370,6 +380,106 @@ def pm_task_activity_list(
 ) -> dict[str, Any]:
     tid = _parse_pm_task_uuid_param(task_id)
     return get_pm_task_activity(tid, limit=limit)
+
+
+@router.get(
+    "/voice/scribe-token",
+    summary="Mint ElevenLabs single-use token for browser Scribe (realtime STT)",
+)
+def pm_voice_scribe_token() -> dict[str, Any]:
+    """
+    Never expose ``ELEVENLABS_API_KEY`` to the client. The browser connects to
+    ``wss://api.elevenlabs.io/v1/speech-to-text/realtime`` with ``token`` + ``model_id``.
+    """
+    try:
+        data = create_scribe_single_use_token()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc).strip()[:500],
+        ) from exc
+    except Exception as exc:
+        logger.exception("ElevenLabs scribe token failed")
+        raise HTTPException(
+            status_code=502,
+            detail=(str(exc).strip() or repr(exc))[:500],
+        ) from exc
+
+    token = data.get("token")
+    if not token:
+        raise HTTPException(
+            status_code=502,
+            detail="ElevenLabs token response missing token",
+        )
+
+    return {
+        "token": token,
+        "model_id": (settings.elevenlabs_scribe_model_id or "scribe_v2_realtime").strip(),
+    }
+
+
+@router.get(
+    "/voice/tts-debug",
+    summary="Show resolved ElevenLabs TTS voice_id and voice name from API",
+)
+def pm_voice_tts_debug() -> dict[str, Any]:
+    """
+    Returns the ``voice_id`` and ``tts_model_id`` read from server env, and when
+    the API key is set, the voice ``name`` from ElevenLabs so you can confirm it
+    matches the voice you expect in the dashboard.
+    """
+    return get_pm_tts_debug_info()
+
+
+@router.post(
+    "/voice/transcript",
+    summary="Turn-based PM voice: transcript text, Claude intake, optional TTS",
+)
+def pm_voice_transcript(
+    body: PmVoiceTranscriptRequest,
+    include_decomposed_plan: bool = Query(
+        default=False,
+        description=(
+            "When true and status is ready_to_plan, attach deterministic "
+            "parsed_goal + decomposed_plan (no auto-save)."
+        ),
+    ),
+    include_tts_audio: bool = Query(
+        default=False,
+        description=(
+            "When true and ElevenLabs env is set, include MP3 as audio_base64 in result.tts."
+        ),
+    ),
+) -> dict[str, Any]:
+    """
+    Client sends each STT segment as ``transcript`` and prior turns in ``conversation``
+    (user = committed STT, assistant = prior ``spoken_reply``) so Claude can clarify
+    across turns. Optional ElevenLabs TTS does not affect success if it fails.
+    """
+    conv = [t.model_dump(mode="python") for t in body.conversation]
+    try:
+        result = process_pm_voice_transcript(
+            body.transcript,
+            conversation=conv,
+            include_decomposed_plan=include_decomposed_plan,
+            include_tts_audio=include_tts_audio,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc).strip()[:2000],
+        ) from exc
+    except Exception as exc:
+        logger.exception("PM voice transcript failed")
+        raise HTTPException(
+            status_code=502,
+            detail=(str(exc).strip() or repr(exc))[:2000],
+        ) from exc
+
+    return {
+        "message": "Voice transcript processed",
+        "result": result,
+    }
 
 
 @router.post(
