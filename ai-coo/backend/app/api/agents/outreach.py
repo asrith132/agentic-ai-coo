@@ -26,6 +26,7 @@ class DraftEmailRequest(BaseModel):
     contact_id: str
     email_type: str = Field(pattern="^(cold|follow_up|investor|partnership)$")
     custom_notes: str | None = None
+    channel: str | None = Field(default=None, pattern="^(email|linkedin_dm|reddit_dm|x_dm|unknown)?$")
 
 
 class DiscoverContactsRequest(BaseModel):
@@ -59,6 +60,7 @@ def draft_email(body: DraftEmailRequest):
             contact_id=body.contact_id,
             email_type=body.email_type,
             custom_notes=body.custom_notes,
+            channel=body.channel,
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

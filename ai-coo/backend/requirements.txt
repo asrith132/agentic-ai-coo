@@ -25,6 +25,11 @@ beautifulsoup4==4.12.3
 playwright==1.49.0
 lxml==5.3.0
 
+# Google APIs (Gmail send/reply integration)
+google-auth==2.36.0
+google-auth-oauthlib==1.2.1
+google-api-python-client==2.154.0
+
 # Twilio (SMS push notifications)
 twilio==9.4.0
 

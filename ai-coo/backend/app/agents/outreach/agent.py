@@ -93,6 +93,7 @@ class OutreachAgent(BaseAgent):
         email_type: str,
         custom_notes: str | None = None,
         event_context: str | None = None,
+        channel: str | None = None,
     ) -> dict[str, Any]:
         self._ensure_context()
         contact = tools.get_contact(contact_id)
@@ -106,22 +107,33 @@ class OutreachAgent(BaseAgent):
         ][-5:]
 
         founder_name = ctx.company_profile.name or "the founder"
+        selected_channel = channel or tools.choose_best_channel(contact)
+        channel_guidance = {
+            "email": "Write as an email with a subject line and a concise body.",
+            "linkedin_dm": "Write as a LinkedIn DM. No subject line. Crisp, professional, and short.",
+            "reddit_dm": "Write as a Reddit DM. Conversational, specific, and low-ego.",
+            "x_dm": "Write as an X DM. Very short, sharp, and human.",
+            "unknown": "Write a short outreach note that can be adapted once the final channel is confirmed.",
+        }
         prompt = (
             f"You are writing an email on behalf of {founder_name} who built "
             f"{ctx.company_profile.product_name or 'the product'}.\n"
+            f"Channel: {selected_channel}.\n"
             f"Brand voice: {ctx.brand_voice.model_dump()}.\n"
             f"Recipient: {contact.get('name')} at {contact.get('company')}.\n"
             f"Here's what we know about them: {contact.get('research_cache') or {}}.\n"
             f"Recent product updates: {recent_relevant_events}.\n"
             f"Extra context: {custom_notes or '(none)'}.\n"
             f"Event context: {event_context or '(none)'}.\n\n"
-            f"Write a {email_type} email that:\n"
+            f"Write a {email_type} outreach message that:\n"
             f"- References something specific about them\n"
             f"- Clearly explains what {ctx.company_profile.product_name or 'the product'} does\n"
             f"- Has a specific, low-friction ask\n"
             f"- Sounds like a real person, not a template\n"
-            f"Keep it under 150 words.\n\n"
-            "Return only valid JSON with keys 'subject', 'body', 'template_used'."
+            f"- Uses the right format for the channel\n"
+            f"{channel_guidance.get(selected_channel, channel_guidance['unknown'])}\n"
+            f"Keep it under 150 words for email and under 80 words for DMs.\n\n"
+            "Return only valid JSON with keys 'subject', 'body', 'template_used'. For non-email channels, set subject to an empty string."
         )
         raw = self.llm_chat(
             system_prompt="You write high-conviction founder outreach emails. Output JSON only.",
@@ -135,6 +147,7 @@ class OutreachAgent(BaseAgent):
             subject=parsed["subject"],
             body=parsed["body"],
             direction="sent",
+            channel="email" if selected_channel == "email" else selected_channel.replace("_dm", ""),
             status="draft",
             template_used=parsed.get("template_used") or email_type,
         )
@@ -145,6 +158,7 @@ class OutreachAgent(BaseAgent):
                 "contact_id": contact_id,
                 "contact_name": contact.get("name"),
                 "contact_email": contact.get("email"),
+                "channel": selected_channel,
                 "email_type": email_type,
                 "subject": parsed["subject"],
                 "body": parsed["body"],
@@ -197,6 +211,7 @@ class OutreachAgent(BaseAgent):
             *profile_results,
             *company_results,
         ]
+        profile_enrichments = [tools.enrich_profile_url(result["url"]) for result in profile_results[:10]]
 
         if not search_results:
             raise ValueError("No search results found for prospect discovery")
@@ -257,7 +272,7 @@ Limit to {limit} prospects.
 """
         raw = self.llm_chat(
             system_prompt=prospect_prompt,
-            user_message=f"Search evidence:\n{search_results}",
+            user_message=f"Search evidence:\n{search_results}\n\nProfile enrichments:\n{profile_enrichments}",
             temperature=0.4,
         )
         prospects = self._parse_prospects_json(raw, limit=limit)
@@ -291,6 +306,16 @@ Limit to {limit} prospects.
                 },
                 notes=notes,
             )
+            company_enrichment = tools.enrich_company_pages(contact["company"])
+            contact = tools.update_contact(
+                contact["id"],
+                {
+                    "research_cache": {
+                        **(contact.get("research_cache") or {}),
+                        "company_enrichment": company_enrichment,
+                    }
+                },
+            )
             saved_contacts.append(contact)
             if auto_research:
                 researched = self.research_contact(
@@ -317,6 +342,7 @@ Limit to {limit} prospects.
             "reddit_results": reddit_results,
             "profile_results": profile_results,
             "company_results": company_results,
+            "profile_enrichments": profile_enrichments,
             "prospects": enriched_prospects,
             "saved_contacts": saved_contacts,
         }
@@ -339,6 +365,13 @@ Limit to {limit} prospects.
             subject=content.get("subject") or message.get("subject") or "",
             body=content.get("body") or message.get("body") or "",
         )
+        if content.get("channel") and content.get("channel") != "email":
+            send_result = {
+                "mode": "manual_social",
+                "status": "ready",
+                "provider_message_id": None,
+                "detail": f"{content['channel']} transport is not wired yet; message is ready for manual/API send.",
+            }
         updated = tools.update_message(
             message_id,
             {
@@ -362,8 +395,12 @@ Limit to {limit} prospects.
                 "contact_name": contact.get("name"),
                 "message_type": content.get("email_type", message.get("template_used")),
                 "template_used": content.get("template_used", message.get("template_used")),
+                "channel": content.get("channel", message.get("channel")),
             },
-            summary=f"Sent {content.get('email_type', message.get('template_used', 'outreach'))} email to {contact.get('name')}",
+            summary=(
+                f"Prepared {content.get('email_type', message.get('template_used', 'outreach'))} "
+                f"outreach to {contact.get('name')} via {content.get('channel', message.get('channel', 'email'))}"
+            ),
             priority="low",
         )
 
