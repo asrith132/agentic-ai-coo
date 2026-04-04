@@ -1,27 +1,26 @@
 """
 main.py — FastAPI application entrypoint.
 
-Mounts all routers under their respective prefixes and configures:
-  - CORS (allow all origins in dev; tighten in production)
-  - Global exception handler
-  - Startup event to verify Supabase connectivity
+All routers are mounted here. The app is intentionally thin:
+no business logic lives here. Agents run as Celery workers —
+this process handles HTTP only.
 
-The Next.js frontend communicates with this API exclusively — agents never
-expose their own HTTP endpoints.
+CORS is open in development (allow_origins=["*"]). In production,
+replace "*" with your actual frontend origin(s).
 """
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-# System routes
+# ── System routes ─────────────────────────────────────────────────────────────
 from app.api.system.context_routes import router as context_router
 from app.api.system.event_routes import router as event_router
 from app.api.system.approval_routes import router as approval_router
 from app.api.system.notification_routes import router as notification_router
 
-# Agent routes
-from app.api.agents.dev_activity import router as dev_router
+# ── Agent routes ──────────────────────────────────────────────────────────────
+from app.api.agents.dev_activity import router as dev_activity_router
 from app.api.agents.outreach import router as outreach_router
 from app.api.agents.marketing import router as marketing_router
 from app.api.agents.finance import router as finance_router
@@ -33,29 +32,32 @@ from app.config import settings
 
 app = FastAPI(
     title="AI COO Backend",
-    description="Multi-agent AI COO system API",
-    version="0.1.0",
+    description=(
+        "Multi-agent AI COO system — event-driven autonomous operations.\n\n"
+        "Seven specialized agents (Dev, Outreach, Marketing, Finance, PM, Research, Legal) "
+        "communicate exclusively through an event bus. Human-in-the-loop approval gates "
+        "protect sensitive actions."
+    ),
+    version="0.3.0",
 )
 
-# ── CORS ─────────────────────────────────────────────────────────────────────
-# In production, replace "*" with your actual frontend origin
+# ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],         # Replace with specific origin(s) in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Routers ───────────────────────────────────────────────────────────────────
-# System infrastructure
+# ── Mount system routers ──────────────────────────────────────────────────────
 app.include_router(context_router)
 app.include_router(event_router)
 app.include_router(approval_router)
 app.include_router(notification_router)
 
-# Agent-specific APIs
-app.include_router(dev_router)
+# ── Mount agent routers ───────────────────────────────────────────────────────
+app.include_router(dev_activity_router)
 app.include_router(outreach_router)
 app.include_router(marketing_router)
 app.include_router(finance_router)
@@ -64,7 +66,7 @@ app.include_router(research_router)
 app.include_router(legal_router)
 
 
-# ── Global exception handler ──────────────────────────────────────────────────
+# ── Global error handler ──────────────────────────────────────────────────────
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
@@ -76,19 +78,26 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ── Startup ───────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def startup_event():
-    """Verify Supabase connectivity on startup."""
+    """Ping Supabase on startup to surface misconfigured credentials early."""
     from app.db.supabase_client import get_client
     try:
-        client = get_client()
-        # Lightweight ping — just checks auth, doesn't pull data
-        client.table("global_context").select("id").limit(1).execute()
+        get_client().table("global_context").select("id").limit(1).execute()
         print("✓ Supabase connected")
-    except Exception as e:
-        print(f"✗ Supabase connection failed: {e}")
-        # Don't crash — allow the app to start even if DB is temporarily unavailable
+    except Exception as exc:
+        print(f"✗ Supabase connection failed: {exc}")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
-@app.get("/health", tags=["system"])
-async def health():
-    return {"status": "ok", "environment": settings.environment}
+@app.get("/api/health", tags=["System"])
+def health():
+    """
+    Liveness check. Returns 200 when the API process is running.
+    Does NOT check DB connectivity — use startup logs for that.
+    """
+    return {"status": "ok", "environment": settings.environment, "version": "0.3.0"}
+
+
+# Alias for legacy /health path
+@app.get("/health", include_in_schema=False)
+def health_legacy():
+    return health()

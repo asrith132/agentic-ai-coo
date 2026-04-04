@@ -3,25 +3,23 @@ schemas/approvals.py — Pydantic models for Approval Queue.
 """
 
 from __future__ import annotations
-from typing import Any
-from uuid import UUID
-from datetime import datetime
+from typing import Any, Optional
 from pydantic import BaseModel
 
 
 class Approval(BaseModel):
-    """Full approval row as returned from the database."""
-    id: UUID
+    """Full approval row as stored in and returned from the DB."""
+    id: Optional[str] = None
     agent: str
     action_type: str
     content: dict[str, Any]
-    status: str = "pending"       # pending | approved | rejected
-    user_edits: dict[str, Any] | None = None
-    created_at: datetime
-    resolved_at: datetime | None = None
+    status: str = "pending"             # pending | approved | rejected
+    user_edits: Optional[dict[str, Any]] = None
+    created_at: Optional[str] = None
+    resolved_at: Optional[str] = None
 
 
 class ApprovalResponse(BaseModel):
     """Request body for POST /api/approvals/{id}/respond."""
-    decision: str                 # "approved" or "rejected"
-    user_edits: dict[str, Any] | None = None
+    status: str                         # "approved" or "rejected"
+    edits: Optional[dict[str, Any]] = None  # user modifications to the content

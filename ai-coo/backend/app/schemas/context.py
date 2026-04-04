@@ -1,86 +1,99 @@
 """
-schemas/context.py — Pydantic models for Global Context.
+schemas/context.py — Typed Pydantic models for Global Context.
 
-GlobalContext mirrors the `global_context` table. Every JSONB column is typed
-as a dict so callers get IDE completion while still being flexible for schema
-evolution. Agents cast to stricter sub-models in their own domain code.
+GlobalContext mirrors the `global_context` Supabase table. Each top-level
+field maps to a JSONB column. Agents read this at the start of every run to
+understand the business they are operating for.
+
+Write access is controlled in core/context.py — not every agent can write
+every field. See the WRITE_PERMISSIONS map there.
 """
 
 from __future__ import annotations
-from typing import Any
-from uuid import UUID
-from datetime import datetime
+from typing import Any, List, Optional
 from pydantic import BaseModel, Field
 
 
 class CompanyProfile(BaseModel):
-    """Identifies the company being operated by the AI COO."""
+    """Static company identity. Updated by user only — no agent can write this."""
     name: str = ""
-    website: str = ""
-    industry: str = ""
-    stage: str = ""           # e.g. "pre-seed", "seed", "series-a"
-    founded_year: int | None = None
-    team_size: int | None = None
     description: str = ""
+    product_name: str = ""
+    product_description: str = ""
+    key_features: List[str] = Field(default_factory=list)
+    tech_stack: List[str] = Field(default_factory=list)
+    founded_date: Optional[str] = None
+    entity_type: str = ""               # e.g. "LLC", "C-Corp", "Ltd"
+    jurisdiction: str = ""              # e.g. "Delaware, USA"
 
 
 class TargetCustomer(BaseModel):
-    """ICP definition used by outreach, marketing, and research agents."""
+    """
+    Ideal Customer Profile (ICP). Research agent can propose updates;
+    user approves. Outreach and marketing agents read this for every campaign.
+    """
     persona: str = ""
-    pain_points: list[str] = Field(default_factory=list)
-    channels: list[str] = Field(default_factory=list)
-    company_size: str = ""
-    geography: str = ""
+    industry: str = ""
+    company_size: str = ""              # e.g. "1-10 employees", "Series A startup"
+    pain_points: List[str] = Field(default_factory=list)
+    channels: List[str] = Field(default_factory=list)
+    language_patterns: List[str] = Field(default_factory=list)  # phrases the ICP uses
 
 
 class BusinessState(BaseModel):
-    """Live business metrics — updated by finance and dev agents."""
-    mrr: float | None = None
-    runway_months: float | None = None
-    active_users: int | None = None
-    open_issues: int | None = None
-    last_deploy: str | None = None  # ISO timestamp
-    current_sprint_goal: str = ""
+    """
+    Live operational state. Updated by finance and pm agents.
+    Agents read this to calibrate urgency (e.g. if runway is low, act faster).
+    """
+    phase: str = "pre_launch"           # pre_launch | launched | growing | fundraising | pivoting
+    active_priorities: List[str] = Field(default_factory=list)  # pm agent writes this
+    runway_months: Optional[float] = None   # finance agent writes
+    monthly_burn: Optional[float] = None    # finance agent writes
+    team_size: int = 1
+    key_metrics: dict[str, Any] = Field(default_factory=dict)  # pm + finance write
+    last_updated: Optional[str] = None  # ISO timestamp of last write
 
 
 class BrandVoice(BaseModel):
-    """Tone and style guide used by marketing and outreach agents."""
-    tone: str = ""
-    values: list[str] = Field(default_factory=list)
-    avoid: list[str] = Field(default_factory=list)
-    example_copy: str = ""
+    """
+    Tone and style guide. Marketing agent can propose; user approves.
+    Every agent that produces user-facing text reads this.
+    """
+    tone: str = ""                      # e.g. "Direct, witty, no fluff"
+    formality: str = "balanced"         # casual | balanced | formal
+    personality_traits: List[str] = Field(default_factory=list)
+    words_to_use: List[str] = Field(default_factory=list)
+    words_to_avoid: List[str] = Field(default_factory=list)
+    example_good_copy: str = ""
 
 
 class CompetitiveLandscape(BaseModel):
-    """Known competitors — updated by research agent."""
-    competitors: list[dict[str, Any]] = Field(default_factory=list)
-    positioning: str = ""
-    differentiators: list[str] = Field(default_factory=list)
+    """Research agent writes this. All agents read for positioning context."""
+    competitors: List[dict[str, Any]] = Field(default_factory=list)
+    market_position: str = ""
 
 
 class GlobalContext(BaseModel):
     """
-    Full global context row. Agents read this at the start of every run.
+    The full global context object returned from the DB and injected into agents.
 
-    The `recent_events` field is a rolling list of the last ~20 event summaries
-    injected into agent system prompts so they have situational awareness.
+    `recent_events` is a rolling list (max 50) of event summaries automatically
+    prepended to agent LLM prompts for situational awareness.
     """
-    id: UUID
-    company_profile: dict[str, Any] = Field(default_factory=dict)
-    target_customer: dict[str, Any] = Field(default_factory=dict)
-    business_state: dict[str, Any] = Field(default_factory=dict)
-    brand_voice: dict[str, Any] = Field(default_factory=dict)
-    competitive_landscape: dict[str, Any] = Field(default_factory=dict)
-    recent_events: list[dict[str, Any]] = Field(default_factory=list)
+    company_profile: CompanyProfile = Field(default_factory=CompanyProfile)
+    target_customer: TargetCustomer = Field(default_factory=TargetCustomer)
+    business_state: BusinessState = Field(default_factory=BusinessState)
+    brand_voice: BrandVoice = Field(default_factory=BrandVoice)
+    competitive_landscape: CompetitiveLandscape = Field(default_factory=CompetitiveLandscape)
+    recent_events: List[dict[str, Any]] = Field(default_factory=list)
     version: int = 1
-    updated_at: datetime
 
 
 class GlobalContextPatch(BaseModel):
-    """Request body for PATCH /api/context/global."""
-    company_profile: dict[str, Any] | None = None
-    target_customer: dict[str, Any] | None = None
-    business_state: dict[str, Any] | None = None
-    brand_voice: dict[str, Any] | None = None
-    competitive_landscape: dict[str, Any] | None = None
-    recent_events: list[dict[str, Any]] | None = None
+    """Request body for PATCH /api/context/global (user-facing API)."""
+    company_profile: Optional[dict[str, Any]] = None
+    target_customer: Optional[dict[str, Any]] = None
+    business_state: Optional[dict[str, Any]] = None
+    brand_voice: Optional[dict[str, Any]] = None
+    competitive_landscape: Optional[dict[str, Any]] = None
+    recent_events: Optional[List[dict[str, Any]]] = None

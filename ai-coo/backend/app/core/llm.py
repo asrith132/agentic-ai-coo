@@ -1,91 +1,165 @@
 """
-core/llm.py — Shared LLM client wrapper (Anthropic Claude primary).
+core/llm.py — Shared LLM client wrapper (Anthropic Claude).
 
-All agents import `call_llm()` from here — never instantiate the Anthropic
-client directly in agent code. This centralizes:
-  - API key management
-  - Model selection (easy to swap or A/B test)
-  - Token usage logging
-  - Error handling and retries
+All agent LLM calls flow through this module. Never instantiate the Anthropic
+client directly in agent code. Centralizing here gives us:
+  - Single place to swap models or add A/B testing
+  - Retry logic with exponential backoff
+  - Structured error logging
+  - Token usage tracking (future)
 
-NOTE: Actual LLM calls are wired up in Prompt 2 (BaseAgent). This file is a
-      clean wrapper that agents will use once that's done.
+Model: claude-sonnet-4-6 (current production model)
 """
 
 from __future__ import annotations
-from typing import Any
+import time
+import logging
+from typing import Any, List, Optional
+
 import anthropic
 from app.config import settings
 
-# Module-level singleton — created once per worker process
-_anthropic_client: anthropic.AsyncAnthropic | None = None
+logger = logging.getLogger(__name__)
 
-# Default model — override per-call if needed
-DEFAULT_MODEL = "claude-opus-4-6"
+DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 4096
+MAX_RETRIES = 3
+BASE_RETRY_DELAY = 2.0  # seconds; doubles each retry
 
 
-def get_anthropic_client() -> anthropic.AsyncAnthropic:
-    """Return (or create) the shared async Anthropic client."""
-    global _anthropic_client
-    if _anthropic_client is None:
-        _anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    return _anthropic_client
-
-
-async def call_llm(
-    system: str,
-    messages: list[dict[str, Any]],
-    model: str = DEFAULT_MODEL,
-    max_tokens: int = DEFAULT_MAX_TOKENS,
-    tools: list[dict[str, Any]] | None = None,
-    temperature: float = 1.0,
-) -> anthropic.types.Message:
+class LLMClient:
     """
-    Send a messages-API request to Claude and return the full response object.
+    Synchronous wrapper around the Anthropic Messages API.
 
-    Args:
-        system:     System prompt string
-        messages:   List of {role, content} dicts (OpenAI-compatible format)
-        model:      Claude model ID — defaults to claude-opus-4-6
-        max_tokens: Maximum tokens in the response
-        tools:      Optional list of tool definitions (for tool-use agents)
-        temperature: Sampling temperature (0-1, default 1.0 per Anthropic recommendation)
-
-    Returns:
-        anthropic.types.Message — callers inspect .content[0].text or tool_use blocks
-
-    Usage in agents:
-        response = await call_llm(system=SYSTEM_PROMPT, messages=conversation)
-        text = response.content[0].text
+    Use `llm.chat()` for simple text exchanges.
+    Use `llm.chat_with_tools()` when the agent uses tool calling.
+    Use `llm.summarize()` for quick summarization tasks.
     """
-    client = get_anthropic_client()
 
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "system": system,
-        "messages": messages,
-        "temperature": temperature,
-    }
-    if tools:
-        kwargs["tools"] = tools
+    def __init__(self, model: str = DEFAULT_MODEL) -> None:
+        self._client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        self.model = model
 
-    response = await client.messages.create(**kwargs)
-    return response
+    # ── Core call with retry ──────────────────────────────────────────────────
+
+    def _call(self, **kwargs: Any) -> anthropic.types.Message:
+        """
+        Internal: call the Messages API with exponential-backoff retry.
+        Retries on RateLimitError and APIStatusError (5xx). Raises on others.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                return self._client.messages.create(**kwargs)
+            except anthropic.RateLimitError as exc:
+                wait = BASE_RETRY_DELAY * (2 ** attempt)
+                logger.warning("Rate limited by Anthropic (attempt %d/%d). Waiting %.1fs.", attempt + 1, MAX_RETRIES, wait)
+                time.sleep(wait)
+                last_exc = exc
+            except anthropic.APIStatusError as exc:
+                if exc.status_code >= 500:
+                    wait = BASE_RETRY_DELAY * (2 ** attempt)
+                    logger.warning("Anthropic server error %d (attempt %d/%d). Waiting %.1fs.", exc.status_code, attempt + 1, MAX_RETRIES, wait)
+                    time.sleep(wait)
+                    last_exc = exc
+                else:
+                    raise
+        raise last_exc  # type: ignore[misc]
+
+    # ── Public interface ──────────────────────────────────────────────────────
+
+    def chat(
+        self,
+        system_prompt: str,
+        user_message: str,
+        temperature: float = 0.7,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+    ) -> str:
+        """
+        Single-turn text chat. Returns the assistant's text response as a string.
+
+        Args:
+            system_prompt: Instructions for the model (agent's system context)
+            user_message:  The user / task message
+            temperature:   Sampling temperature (0.0–1.0)
+            max_tokens:    Max response tokens
+
+        Returns:
+            Plain text string of the assistant's response.
+        """
+        response = self._call(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+            temperature=temperature,
+        )
+        block = response.content[0]
+        if block.type != "text":
+            raise ValueError(f"Expected text response, got: {block.type}")
+        return block.text
+
+    def chat_with_tools(
+        self,
+        system_prompt: str,
+        user_message: str,
+        tools: List[dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+    ) -> dict[str, Any]:
+        """
+        Chat with tool use enabled. Returns a dict with the full response.
+
+        Returns a dict with keys:
+          - "text":       str | None  — any text content blocks concatenated
+          - "tool_calls": list[dict]  — list of {name, input} dicts for each tool_use block
+          - "stop_reason": str        — "end_turn" | "tool_use"
+
+        Usage:
+            result = llm.chat_with_tools(system, message, tools=[...])
+            if result["tool_calls"]:
+                for tc in result["tool_calls"]:
+                    output = execute_tool(tc["name"], tc["input"])
+        """
+        response = self._call(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}],
+            tools=tools,
+            temperature=temperature,
+        )
+
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use":
+                tool_calls.append({"id": block.id, "name": block.name, "input": block.input})
+
+        return {
+            "text": "\n".join(text_parts) if text_parts else None,
+            "tool_calls": tool_calls,
+            "stop_reason": response.stop_reason,
+        }
+
+    def summarize(self, text: str, max_length: int = 200) -> str:
+        """
+        Convenience method: summarize `text` in at most `max_length` words.
+        Used by agents to produce summaries for notifications and recent_events.
+        """
+        return self.chat(
+            system_prompt=(
+                f"You are a concise summarizer. Summarize the provided text in at most "
+                f"{max_length} words. Output only the summary — no preamble, no labels."
+            ),
+            user_message=text,
+            temperature=0.3,
+            max_tokens=512,
+        )
 
 
-async def call_llm_text(
-    system: str,
-    messages: list[dict[str, Any]],
-    **kwargs: Any,
-) -> str:
-    """
-    Convenience wrapper — returns just the text string from a text response.
-    Raises ValueError if the response contains tool_use blocks instead.
-    """
-    response = await call_llm(system=system, messages=messages, **kwargs)
-    first = response.content[0]
-    if first.type != "text":
-        raise ValueError(f"Expected text response, got: {first.type}")
-    return first.text
+# Module-level singleton — import and use everywhere
+llm = LLMClient()

@@ -1,26 +1,26 @@
 """
 core/approvals.py — Approval queue helpers.
 
-Certain agent actions require human sign-off before execution — e.g. sending
-an email, publishing a post, initiating a payment. Agents request approval via
-`request_approval()`, then poll `get_approval_status()` or wait for a Celery
-callback triggered by Supabase Realtime.
+Agents use the approval queue before taking sensitive external actions
+(send email, publish post, initiate payment, etc.).
 
-The Next.js frontend polls GET /api/approvals and the user clicks
-Approve / Reject (with optional edits). The backend updates the row and the
-waiting agent task is unblocked.
-
-Approval statuses: pending | approved | rejected
+Pattern:
+  1. Agent calls create_approval()  → row inserted with status="pending"
+  2. Frontend displays pending items to the user
+  3. User clicks Approve/Reject (with optional edits)
+  4. Frontend calls POST /api/approvals/{id}/respond
+  5. Agent polls get_approval() until status != "pending", then acts accordingly
 """
 
 from __future__ import annotations
-from typing import Any
+from typing import Any, List, Optional
 from datetime import datetime, timezone
+
 from app.db.supabase_client import get_client
-from app.schemas.approvals import Approval, ApprovalResponse
+from app.schemas.approvals import Approval
 
 
-async def request_approval(
+def create_approval(
     agent: str,
     action_type: str,
     content: dict[str, Any],
@@ -30,11 +30,11 @@ async def request_approval(
 
     Args:
         agent:       Name of the requesting agent (e.g. "outreach")
-        action_type: Short label for the action (e.g. "send_email", "publish_post")
-        content:     The full payload the agent intends to act on — shown to the user
+        action_type: Short label for what is being approved (e.g. "send_email")
+        content:     The full payload the agent intends to act on — displayed to user
 
     Returns:
-        The created Approval object with status="pending"
+        Approval with status="pending" and a populated id.
     """
     client = get_client()
     response = (
@@ -45,32 +45,57 @@ async def request_approval(
     return Approval(**response.data[0])
 
 
-async def respond_to_approval(
+def get_pending_approvals(agent: Optional[str] = None) -> List[Approval]:
+    """
+    Return all pending approvals, ordered oldest-first.
+
+    Args:
+        agent: Optional filter — only return approvals for this agent name.
+
+    Used by the frontend dashboard to show the approval queue.
+    """
+    client = get_client()
+    query = (
+        client.table("approvals")
+        .select("*")
+        .eq("status", "pending")
+        .order("created_at", desc=False)
+    )
+    if agent:
+        query = query.eq("agent", agent)
+    response = query.execute()
+    return [Approval(**row) for row in response.data]
+
+
+def respond_to_approval(
     approval_id: str,
-    decision: str,
-    user_edits: dict[str, Any] | None = None,
+    status: str,
+    edits: Optional[dict[str, Any]] = None,
 ) -> Approval:
     """
     Record a human decision on an approval request.
 
     Args:
-        approval_id: UUID of the approval row
-        decision:    "approved" or "rejected"
-        user_edits:  Optional dict of changes the user made to `content`
+        approval_id: UUID string of the approval row
+        status:      "approved" or "rejected"
+        edits:       Optional user-modified version of content (e.g. edited email body)
 
     Returns:
-        Updated Approval object
+        Updated Approval object.
+
+    Raises:
+        ValueError: If status is not "approved" or "rejected".
     """
-    if decision not in ("approved", "rejected"):
-        raise ValueError("decision must be 'approved' or 'rejected'")
+    if status not in ("approved", "rejected"):
+        raise ValueError(f"Invalid status '{status}' — must be 'approved' or 'rejected'")
 
     client = get_client()
     payload: dict[str, Any] = {
-        "status": decision,
+        "status": status,
         "resolved_at": datetime.now(timezone.utc).isoformat(),
     }
-    if user_edits is not None:
-        payload["user_edits"] = user_edits
+    if edits is not None:
+        payload["user_edits"] = edits
 
     response = (
         client.table("approvals")
@@ -81,25 +106,12 @@ async def respond_to_approval(
     return Approval(**response.data[0])
 
 
-async def get_pending_approvals(agent: str | None = None) -> list[Approval]:
+def get_approval(approval_id: str) -> Optional[Approval]:
     """
-    Fetch all pending approvals, optionally filtered by agent.
+    Fetch a single approval by ID.
 
-    Used by the frontend dashboard to show the approval queue.
-    """
-    client = get_client()
-    query = client.table("approvals").select("*").eq("status", "pending").order("created_at")
-    if agent:
-        query = query.eq("agent", agent)
-    response = query.execute()
-    return [Approval(**row) for row in response.data]
-
-
-async def get_approval_status(approval_id: str) -> Approval | None:
-    """
-    Poll the status of a specific approval request.
-
-    Agents waiting on approval call this in a retry loop (or via Celery chord).
+    Agents poll this in a retry loop to detect when the user has responded.
+    Returns None if not found.
     """
     client = get_client()
     response = (

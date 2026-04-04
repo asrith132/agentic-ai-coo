@@ -3,24 +3,23 @@ schemas/notifications.py — Pydantic models for Notifications.
 """
 
 from __future__ import annotations
-from uuid import UUID
-from datetime import datetime
+from typing import Optional
 from pydantic import BaseModel
 
 
 class Notification(BaseModel):
-    """Full notification row as returned from the database."""
-    id: UUID
+    """Full notification row as stored in and returned from the DB."""
+    id: Optional[str] = None
     agent: str
     title: str
     body: str
-    priority: str = "medium"     # low | medium | high | urgent
+    priority: str = "medium"            # low | medium | high | urgent
     read: bool = False
-    created_at: datetime
+    created_at: Optional[str] = None
 
 
 class NotificationCreate(BaseModel):
-    """Used internally — callers use notify() helper instead."""
+    """Internal payload for inserting a notification. Use send_notification() instead."""
     agent: str
     title: str
     body: str

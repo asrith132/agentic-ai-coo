@@ -1,40 +1,45 @@
 """
 core/notifications.py — Notification + push helpers.
 
-Agents surface important updates to the user through two channels:
-  1. In-app notifications stored in the `notifications` table (polled by frontend)
-  2. SMS push via Twilio for urgent alerts
+Two delivery channels:
+  1. In-app: row inserted into `notifications` table, polled by frontend
+  2. SMS push via Twilio: triggered automatically for high/urgent priority
 
-Agents should call `notify()` for any user-facing update. The frontend
-displays unread notifications with a badge and real-time updates via
-Supabase Realtime subscriptions.
+Agents call send_notification() — never insert into the table directly.
 """
 
 from __future__ import annotations
+from typing import List
+import logging
+
 from app.db.supabase_client import get_client
 from app.schemas.notifications import Notification
 from app.config import settings
 
+logger = logging.getLogger(__name__)
 
-async def notify(
+# Priority levels that trigger an SMS push
+PUSH_PRIORITIES = {"high", "urgent"}
+
+
+def send_notification(
     agent: str,
     title: str,
     body: str,
     priority: str = "medium",
-    push: bool = False,
 ) -> Notification:
     """
     Create an in-app notification and optionally send an SMS push.
 
     Args:
         agent:    Name of the agent creating the notification
-        title:    Short headline (shown in notification list header)
+        title:    Short headline shown in the notification list header
         body:     Full message body
-        priority: "low" | "medium" | "high" | "urgent"
-        push:     If True AND priority is "urgent", send an SMS via Twilio
+        priority: low | medium | high | urgent
+                  "high" and "urgent" also trigger Twilio SMS.
 
     Returns:
-        The persisted Notification object
+        The persisted Notification object.
     """
     client = get_client()
     response = (
@@ -44,16 +49,17 @@ async def notify(
     )
     notification = Notification(**response.data[0])
 
-    if push and priority == "urgent":
-        await _send_sms_push(title, body)
+    if priority in PUSH_PRIORITIES:
+        _send_sms(title, body)
 
     return notification
 
 
-async def _send_sms_push(title: str, body: str) -> None:
+def _send_sms(title: str, body: str) -> None:
     """
-    Send an urgent SMS via Twilio. Only called for priority="urgent" + push=True.
+    Send an SMS via Twilio for high/urgent notifications.
     Silently no-ops if Twilio credentials are not configured.
+    Never raises — notification failures must not crash agent execution.
     """
     if not all([
         settings.twilio_account_sid,
@@ -71,13 +77,18 @@ async def _send_sms_push(title: str, body: str) -> None:
             from_=settings.twilio_phone_from,
             to=settings.twilio_phone_to,
         )
-    except Exception:
-        # Never let notification failures crash agent execution
-        pass
+    except Exception as exc:
+        logger.warning("Twilio SMS failed: %s", exc)
 
 
-async def get_notifications(unread_only: bool = False, limit: int = 50) -> list[Notification]:
-    """Fetch notifications for the dashboard, optionally filtering to unread."""
+def get_notifications(unread_only: bool = False, limit: int = 50) -> List[Notification]:
+    """
+    Return notifications for the dashboard, newest-first.
+
+    Args:
+        unread_only: If True, filter to unread=False rows only.
+        limit:       Max rows returned.
+    """
     client = get_client()
     query = (
         client.table("notifications")
@@ -91,13 +102,13 @@ async def get_notifications(unread_only: bool = False, limit: int = 50) -> list[
     return [Notification(**row) for row in response.data]
 
 
-async def mark_read(notification_id: str) -> None:
+def mark_notification_read(notification_id: str) -> None:
     """Mark a single notification as read."""
     client = get_client()
     client.table("notifications").update({"read": True}).eq("id", notification_id).execute()
 
 
-async def mark_all_read() -> None:
+def mark_all_read() -> None:
     """Mark all unread notifications as read."""
     client = get_client()
     client.table("notifications").update({"read": True}).eq("read", False).execute()

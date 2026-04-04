@@ -1,28 +1,26 @@
 """
 core/events.py — Event Bus helpers.
 
-Agents communicate with each other ONLY through events — there are no direct
-agent-to-agent calls. This decouples agents completely and allows the system
-to be audited, replayed, and extended without changing existing agents.
+Agents communicate exclusively through events. No direct agent-to-agent calls.
 
 Flow:
-  1. Agent A emits an event via `emit_event()`
-  2. The event is persisted in the `events` table
-  3. Supabase Realtime broadcasts the INSERT to all listeners
-  4. Agent B's Celery task wakes up and calls `get_unconsumed_events()`
-  5. Agent B processes relevant events and calls `mark_consumed()`
+  1. Agent A calls emit_event()   → row inserted into `events` table
+  2. Supabase Realtime broadcasts the INSERT
+  3. Agent B's Celery task calls  get_pending_events(agent_name, subscribed_types)
+  4. Agent B processes the events and calls mark_event_consumed()
 
-Priority levels: low | medium | high | urgent
+Priority: low | medium | high | urgent
 """
 
 from __future__ import annotations
-from typing import Any
+from typing import Any, List, Optional
 from datetime import datetime, timezone
+
 from app.db.supabase_client import get_client
 from app.schemas.events import Event, EventCreate
 
 
-async def emit_event(
+def emit_event(
     source_agent: str,
     event_type: str,
     payload: dict[str, Any],
@@ -33,14 +31,14 @@ async def emit_event(
     Persist a new event to the event bus.
 
     Args:
-        source_agent: Name of the agent emitting the event (e.g. "dev_activity")
-        event_type:   Namespaced type string (e.g. "dev.pr_merged", "outreach.reply_received")
-        payload:      Arbitrary structured data relevant to the event
-        summary:      Human-readable one-sentence description (shown in notifications)
-        priority:     "low" | "medium" | "high" | "urgent"
+        source_agent: Name of the emitting agent (e.g. "dev_activity")
+        event_type:   Namespaced type (e.g. "dev.pr_merged")
+        payload:      Structured data about the event
+        summary:      Human-readable one-liner (shown in recent_events + notifications)
+        priority:     low | medium | high | urgent
 
     Returns:
-        The persisted Event object (includes generated id and timestamp)
+        The persisted Event object with id and timestamp populated.
     """
     client = get_client()
     data = EventCreate(
@@ -58,29 +56,30 @@ async def emit_event(
     return Event(**response.data[0])
 
 
-async def get_unconsumed_events(
-    consumer_agent: str,
-    event_types: list[str] | None = None,
+def get_pending_events(
+    agent_name: str,
+    event_types: Optional[List[str]] = None,
     limit: int = 50,
-) -> list[Event]:
+) -> List[Event]:
     """
-    Fetch events that `consumer_agent` has not yet consumed.
+    Return events that `agent_name` has not yet consumed.
 
     Args:
-        consumer_agent: The agent calling this — used to filter the consumed_by array
-        event_types:    Optional allowlist of event_type strings to filter on
-        limit:          Max events to return per poll (oldest-first)
+        agent_name:  The calling agent — events already in its consumed_by list are excluded.
+        event_types: Optional allowlist of event_type strings to filter on.
+                     If None, returns all unconsumed event types.
+        limit:       Max events returned per call, ordered oldest-first.
 
     Returns:
-        List of unconsumed Event objects, ordered by timestamp ascending
+        List of unconsumed Event objects.
     """
     client = get_client()
 
     query = (
         client.table("events")
         .select("*")
-        # Filter out rows where consumer_agent is already in consumed_by
-        .not_.contains("consumed_by", [consumer_agent])
+        # Postgres: NOT (consumed_by @> ARRAY[agent_name])
+        .not_.contains("consumed_by", [agent_name])
         .order("timestamp", desc=False)
         .limit(limit)
     )
@@ -92,33 +91,38 @@ async def get_unconsumed_events(
     return [Event(**row) for row in response.data]
 
 
-async def mark_consumed(event_id: str, consumer_agent: str) -> None:
+def mark_event_consumed(event_id: str, agent_name: str) -> None:
     """
-    Append `consumer_agent` to the `consumed_by` array of an event.
+    Append `agent_name` to the consumed_by array for an event.
 
-    Safe to call multiple times — Postgres array append is idempotent when
-    the value already exists (we use array_append logic via RPC if needed,
-    but simple update works for now since agents don't race on the same row).
+    Idempotent — safe to call multiple times for the same agent.
+    Called by agents after they have finished processing an event.
     """
     client = get_client()
 
-    # Fetch current consumed_by list
+    # Fetch current array to avoid duplicates
     response = (
         client.table("events")
         .select("consumed_by")
         .eq("id", event_id)
-        .single()
+        .maybe_single()
         .execute()
     )
+    if not response.data:
+        return
+
     current: list[str] = response.data.get("consumed_by") or []
+    if agent_name not in current:
+        client.table("events").update(
+            {"consumed_by": current + [agent_name]}
+        ).eq("id", event_id).execute()
 
-    if consumer_agent not in current:
-        updated = current + [consumer_agent]
-        client.table("events").update({"consumed_by": updated}).eq("id", event_id).execute()
 
-
-async def get_recent_events(limit: int = 100) -> list[Event]:
-    """Fetch the most recent events for display in the dashboard."""
+def get_all_events(limit: int = 50) -> List[Event]:
+    """
+    Return the most recent events, newest-first.
+    Used by the dashboard event feed and debug tooling.
+    """
     client = get_client()
     response = (
         client.table("events")
