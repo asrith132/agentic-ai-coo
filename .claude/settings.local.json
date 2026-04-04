@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(.venv/bin/pip install:*)",
-      "Bash(.venv/bin/python -c ':*)"
+      "Bash(.venv/bin/python -c ':*)",
+      "Bash(python3 -m json.tool)"
     ]
   }
 }
