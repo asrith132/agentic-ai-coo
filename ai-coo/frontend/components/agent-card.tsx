@@ -2,6 +2,7 @@
 
 import { Agent, AgentStatus } from '@/lib/mock-data';
 import { cn } from '@/lib/utils';
+import { AgentIcon, agentColors } from '@/lib/agent-visuals';
 
 interface AgentCardProps {
   agent: Agent;
@@ -9,17 +10,6 @@ interface AgentCardProps {
   className?: string;
   isPlanetMode?: boolean;
 }
-
-const agentColors: Record<string, string> = {
-  'product-manager': '#86EFAC',
-  'engineer':        '#93C5FD',
-  'research':        '#C4B5FD',
-  'marketing':       '#FDBA74',
-  'legal':           '#5EEAD4',
-  'finance':         '#FCD34D',
-  'outreach-agent':  '#F9A8D4',
-  'meeting-agent':   '#A5B4FC',
-};
 
 function hexToRgb(hex: string) {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -347,7 +337,7 @@ export function AgentCard({ agent, onClick, className, isPlanetMode = false }: A
             className="relative w-9 h-9 rounded-lg flex items-center justify-center text-[10px] font-bold tracking-wider shrink-0 font-mono"
             style={{ background: badge.bg, border: `1px solid ${badge.border}`, color: badge.color }}
           >
-            {agent.shortName}
+            <AgentIcon agentId={agent.id} className="w-5 h-5" strokeWidth={2.1} />
             {agent.status === 'thinking' && (
               <span className="absolute inset-0 rounded-lg animate-ping opacity-30" style={{ border: `1px solid ${color}` }} />
             )}
@@ -370,7 +360,7 @@ export function AgentCard({ agent, onClick, className, isPlanetMode = false }: A
               className="w-6 h-6 rounded-md flex items-center justify-center text-[9px] font-bold font-mono shrink-0"
               style={{ background: badge.bg, border: `1px solid ${badge.border}`, color: badge.color }}
             >
-              {agent.shortName}
+              <AgentIcon agentId={agent.id} className="w-3.5 h-3.5" strokeWidth={2.1} />
             </div>
             <p className="font-semibold text-[11px] text-foreground/90 leading-tight truncate" style={{ fontFamily: 'var(--font-heading)' }}>
               {agent.name}
