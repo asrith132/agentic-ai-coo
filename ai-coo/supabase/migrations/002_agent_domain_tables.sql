@@ -251,55 +251,90 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_finance_snapshots_month
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- PM AGENT
--- Task backlog, milestones, and priority reshuffle history.
+-- Task backlog, milestones, dependencies, and priority reshuffle history.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS pm_milestones (
-    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    name            TEXT        NOT NULL,
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            TEXT NOT NULL,
     description     TEXT,
     target_date     DATE,
-    status          TEXT        DEFAULT 'active'
-                                CHECK (status IN ('active', 'completed', 'at_risk')),
+    status          TEXT DEFAULT 'planned'
+                    CHECK (status IN ('planned', 'active', 'completed', 'at_risk')),
     completed_at    TIMESTAMP,
-    created_at      TIMESTAMP   DEFAULT now()
+    created_at      TIMESTAMP DEFAULT now(),
+    updated_at      TIMESTAMP DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_pm_milestones_status
     ON pm_milestones (status, target_date);
 
+CREATE OR REPLACE FUNCTION pm_milestones_set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS pm_milestones_updated_at ON pm_milestones;
+
+CREATE TRIGGER pm_milestones_updated_at
+    BEFORE UPDATE ON pm_milestones
+    FOR EACH ROW EXECUTE FUNCTION pm_milestones_set_updated_at();
+
 
 CREATE TABLE IF NOT EXISTS pm_tasks (
-    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    title           TEXT        NOT NULL,
-    description     TEXT,
-    status          TEXT        DEFAULT 'todo'
-                                CHECK (status IN ('todo', 'in_progress', 'done', 'blocked')),
-    priority_score  FLOAT       DEFAULT 50      -- 0–100; higher = more important
-                                CHECK (priority_score BETWEEN 0 AND 100),
-    priority_reason TEXT,           -- LLM-generated explanation of the score
-    source_agent    TEXT,           -- agent that created the task, or "user"
-    source_event_id UUID,           -- event that triggered creation (foreign key not enforced to keep loose coupling)
-    milestone_id    UUID        REFERENCES pm_milestones(id) ON DELETE SET NULL,
-    assigned_to     TEXT,
-    due_date        DATE,
-    completed_at    TIMESTAMP,
-    created_at      TIMESTAMP   DEFAULT now(),
-    updated_at      TIMESTAMP   DEFAULT now()
+    id                        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title                     TEXT NOT NULL,
+    description               TEXT,
+    status                    TEXT DEFAULT 'todo'
+                              CHECK (status IN ('todo', 'in_progress', 'done', 'blocked')),
+    priority_score            NUMERIC(6,2) DEFAULT 50
+                              CHECK (priority_score BETWEEN 0 AND 100),
+    priority_reason           TEXT,
+    source_agent              TEXT,
+    source_event_id           UUID,
+    source_event_type         TEXT,
+    milestone_id              UUID REFERENCES pm_milestones(id) ON DELETE SET NULL,
+    assigned_to               TEXT,
+    impact_area               TEXT DEFAULT 'product'
+                              CHECK (impact_area IN ('revenue', 'growth', 'compliance', 'product', 'cost', 'retention')),
+    urgency                   TEXT DEFAULT 'medium'
+                              CHECK (urgency IN ('low', 'medium', 'high', 'critical')),
+    effort_points             INT DEFAULT 3 CHECK (effort_points >= 1),
+    is_revenue_generating     BOOLEAN DEFAULT false,
+    is_cost_saving            BOOLEAN DEFAULT false,
+    is_compliance_related     BOOLEAN DEFAULT false,
+    is_customer_requested     BOOLEAN DEFAULT false,
+    due_date                  DATE,
+    completed_at              TIMESTAMP,
+    created_at                TIMESTAMP DEFAULT now(),
+    updated_at                TIMESTAMP DEFAULT now()
 );
 
--- Priority-sorted backlog (main dashboard query)
+-- Priority-sorted backlog
 CREATE INDEX IF NOT EXISTS idx_pm_tasks_priority
-    ON pm_tasks (priority_score DESC, status)
-    WHERE status NOT IN ('done');
+    ON pm_tasks (priority_score DESC, updated_at DESC)
+    WHERE status IN ('todo', 'in_progress', 'blocked');
 
 -- Status filter + recency
 CREATE INDEX IF NOT EXISTS idx_pm_tasks_status
     ON pm_tasks (status, updated_at DESC);
 
+-- Revenue tasks, useful during runway warnings
+CREATE INDEX IF NOT EXISTS idx_pm_tasks_revenue
+    ON pm_tasks (is_revenue_generating, priority_score DESC)
+    WHERE is_revenue_generating = true AND status IN ('todo', 'in_progress', 'blocked');
+
+-- Compliance tasks, useful during deadline events
+CREATE INDEX IF NOT EXISTS idx_pm_tasks_compliance
+    ON pm_tasks (is_compliance_related, due_date)
+    WHERE is_compliance_related = true AND status IN ('todo', 'in_progress', 'blocked');
+
 -- Blocked tasks surfaced immediately
 CREATE INDEX IF NOT EXISTS idx_pm_tasks_blocked
-    ON pm_tasks (status)
+    ON pm_tasks (updated_at DESC)
     WHERE status = 'blocked';
 
 -- Milestone progress rollup
@@ -307,7 +342,6 @@ CREATE INDEX IF NOT EXISTS idx_pm_tasks_milestone
     ON pm_tasks (milestone_id, status)
     WHERE milestone_id IS NOT NULL;
 
--- Auto-update updated_at
 CREATE OR REPLACE FUNCTION pm_tasks_set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -316,25 +350,47 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS pm_tasks_updated_at ON pm_tasks;
+
 CREATE TRIGGER pm_tasks_updated_at
     BEFORE UPDATE ON pm_tasks
     FOR EACH ROW EXECUTE FUNCTION pm_tasks_set_updated_at();
 
 
+CREATE TABLE IF NOT EXISTS pm_task_dependencies (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_id             UUID NOT NULL REFERENCES pm_tasks(id) ON DELETE CASCADE,
+    depends_on_task_id  UUID NOT NULL REFERENCES pm_tasks(id) ON DELETE CASCADE,
+    created_at          TIMESTAMP DEFAULT now(),
+    CONSTRAINT pm_task_dependencies_no_self_dependency
+        CHECK (task_id <> depends_on_task_id),
+    CONSTRAINT pm_task_dependencies_unique
+        UNIQUE (task_id, depends_on_task_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pm_task_dependencies_task
+    ON pm_task_dependencies (task_id);
+
+CREATE INDEX IF NOT EXISTS idx_pm_task_dependencies_depends_on
+    ON pm_task_dependencies (depends_on_task_id);
+
+
 CREATE TABLE IF NOT EXISTS pm_priority_history (
-    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    timestamp       TIMESTAMP   DEFAULT now(),
-    trigger_event   TEXT,           -- what caused the reshuffle (e.g. "dev.build_failed", "user request")
-    -- previous_top_3: [{task_id: uuid, title: str, score: float}, ...]
-    previous_top_3  JSONB,
-    -- new_top_3: same shape
-    new_top_3       JSONB,
-    reasoning       TEXT            -- LLM-generated explanation of the reprioritization
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    timestamp           TIMESTAMP DEFAULT now(),
+    trigger_event_id    UUID,
+    trigger_event_type  TEXT,
+    trigger_event       TEXT,
+    previous_top_3      JSONB DEFAULT '[]',
+    new_top_3           JSONB DEFAULT '[]',
+    reasoning           TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_pm_priority_history_ts
     ON pm_priority_history (timestamp DESC);
 
+CREATE INDEX IF NOT EXISTS idx_pm_priority_history_event_type
+    ON pm_priority_history (trigger_event_type, timestamp DESC);
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- RESEARCH AGENT

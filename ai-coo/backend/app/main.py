@@ -97,6 +97,82 @@ def health():
     return {"status": "ok", "environment": settings.environment, "version": "0.3.0"}
 
 
+@app.get("/api/health/status", tags=["System"])
+def health_status():
+    """
+    Supabase + core PM table probes. Use after changing .env or running migrations.
+    Safe read-only checks (limit 1); does not expose row data.
+    """
+    from urllib.parse import urlparse
+
+    from postgrest.exceptions import APIError
+
+    from app.db.supabase_client import get_client
+
+    def probe_table(client: object, table: str) -> dict:
+        try:
+            client.table(table).select("id").limit(1).execute()
+            return {"ok": True}
+        except APIError as exc:
+            return {
+                "ok": False,
+                "code": str(exc.code) if exc.code is not None else None,
+                "message": (exc.message or str(exc))[:300],
+            }
+        except Exception as exc:
+            return {"ok": False, "message": str(exc)[:300]}
+
+    host = urlparse(settings.supabase_url).netloc or "unknown"
+    client = get_client()
+
+    table_names = (
+        "global_context",
+        "pm_milestones",
+        "pm_tasks",
+        "pm_task_dependencies",
+        "pm_priority_history",
+    )
+    tables: dict[str, dict] = {name: probe_table(client, name) for name in table_names}
+
+    routing: dict[str, object] = {"target_agent_column": False}
+    if tables.get("pm_tasks", {}).get("ok"):
+        try:
+            client.table("pm_tasks").select("target_agent").limit(1).execute()
+            routing["target_agent_column"] = True
+        except APIError as exc:
+            routing["target_agent_column"] = False
+            routing["detail"] = (exc.message or str(exc))[:200]
+        except Exception as exc:
+            routing["target_agent_column"] = False
+            routing["detail"] = str(exc)[:200]
+
+    core_ok = bool(tables.get("global_context", {}).get("ok"))
+    pm_core_ok = bool(
+        tables.get("pm_milestones", {}).get("ok")
+        and tables.get("pm_tasks", {}).get("ok")
+    )
+    deps_ok = bool(tables.get("pm_task_dependencies", {}).get("ok"))
+
+    return {
+        "api": {
+            "ok": True,
+            "environment": settings.environment,
+            "version": "0.3.0",
+        },
+        "supabase": {
+            "url_host": host,
+        },
+        "tables": tables,
+        "pm_routing": routing,
+        "summary": {
+            "core_db_ready": core_ok,
+            "pm_milestones_and_tasks_ready": pm_core_ok,
+            "pm_task_dependencies_ready": deps_ok,
+            "pm_target_agent_column_ready": bool(routing.get("target_agent_column")),
+        },
+    }
+
+
 # Alias for legacy /health path
 @app.get("/health", include_in_schema=False)
 def health_legacy():
