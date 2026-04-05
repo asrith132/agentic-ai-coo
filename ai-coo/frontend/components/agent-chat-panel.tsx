@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { AgentIcon, agentColors } from '@/lib/agent-visuals';
+import { LegalAgentSidebar } from '@/components/legal-agent-sidebar';
 
 interface AgentChatPanelProps {
   agent: Agent | null;
@@ -245,7 +246,7 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
 
       {/* ── RIGHT: Detail ── */}
       <div
-        className="w-[380px] shrink-0 flex flex-col overflow-y-auto"
+        className="w-[380px] shrink-0 flex flex-col overflow-hidden"
         style={{ background: 'var(--card-glass-bg)' }}
       >
           {/* Detail header */}
@@ -287,94 +288,98 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
             </div>
           </div>
 
-          {/* Detail sections */}
-          <div className="flex-1 p-5 space-y-5">
-            <Section title="Summary">
-              <p className="text-sm text-muted-foreground leading-relaxed">{agent.summary}</p>
-            </Section>
+          {/* Detail sections — legal agent gets live data, others get mock */}
+          {agent.id === 'legal' ? (
+            <LegalAgentSidebar rgb={rgb} color={color} />
+          ) : (
+            <div className="flex-1 overflow-y-auto p-5 space-y-5">
+              <Section title="Summary">
+                <p className="text-sm text-muted-foreground leading-relaxed">{agent.summary}</p>
+              </Section>
 
-            <Separator className="bg-border/40" />
+              <Separator className="bg-border/40" />
 
-            <Section title="Current Tasks">
-              <ul className="space-y-2">
-                {agent.tasks.map((task, i) => (
-                  <li key={i} className="flex items-start gap-2.5 text-sm">
-                    <div className="w-5 h-5 rounded-md border border-border/50 flex items-center justify-center shrink-0 mt-0.5">
-                      <div className="w-1.5 h-1.5 rounded-sm bg-primary/40" />
-                    </div>
-                    <span className="text-muted-foreground leading-relaxed">{task}</span>
-                  </li>
-                ))}
-              </ul>
-            </Section>
+              <Section title="Current Tasks">
+                <ul className="space-y-2">
+                  {agent.tasks.map((task, i) => (
+                    <li key={i} className="flex items-start gap-2.5 text-sm">
+                      <div className="w-5 h-5 rounded-md border border-border/50 flex items-center justify-center shrink-0 mt-0.5">
+                        <div className="w-1.5 h-1.5 rounded-sm bg-primary/40" />
+                      </div>
+                      <span className="text-muted-foreground leading-relaxed">{task}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Section>
 
-            <Separator className="bg-border/40" />
+              <Separator className="bg-border/40" />
 
-            <Section title="Risks">
-              <ul className="space-y-2">
-                {agent.risks.map((risk, i) => (
-                  <li key={i} className="flex items-start gap-2.5 text-sm">
-                    <span className="w-5 h-5 rounded-md bg-warning/10 border border-warning/25 flex items-center justify-center shrink-0 mt-0.5">
-                      <div className="w-1.5 h-1.5 rounded-full bg-warning" />
-                    </span>
-                    <span className="text-muted-foreground leading-relaxed">{risk}</span>
-                  </li>
-                ))}
-              </ul>
-            </Section>
+              <Section title="Risks">
+                <ul className="space-y-2">
+                  {agent.risks.map((risk, i) => (
+                    <li key={i} className="flex items-start gap-2.5 text-sm">
+                      <span className="w-5 h-5 rounded-md bg-warning/10 border border-warning/25 flex items-center justify-center shrink-0 mt-0.5">
+                        <div className="w-1.5 h-1.5 rounded-full bg-warning" />
+                      </span>
+                      <span className="text-muted-foreground leading-relaxed">{risk}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Section>
 
-            <Separator className="bg-border/40" />
+              <Separator className="bg-border/40" />
 
-            <Section title="Dependencies">
-              <div className="flex flex-wrap gap-2">
-                {agent.dependencies.map((dep, i) => (
-                  <Badge
-                    key={i}
-                    variant="secondary"
-                    className="text-[11px] bg-secondary/60 border border-border/50 text-muted-foreground font-normal"
-                  >
-                    {dep}
-                  </Badge>
-                ))}
-              </div>
-            </Section>
-
-            <Separator className="bg-border/40" />
-
-            <Section title="Recommendations">
-              <ul className="space-y-2">
-                {agent.recommendations.map((rec, i) => (
-                  <li key={i} className="flex items-start gap-2.5 text-sm">
-                    <span
-                      className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 mt-0.5"
-                      style={{
-                        background: `rgba(${rgb},0.08)`,
-                        border: `1px solid rgba(${rgb},0.20)`,
-                      }}
+              <Section title="Dependencies">
+                <div className="flex flex-wrap gap-2">
+                  {agent.dependencies.map((dep, i) => (
+                    <Badge
+                      key={i}
+                      variant="secondary"
+                      className="text-[11px] bg-secondary/60 border border-border/50 text-muted-foreground font-normal"
                     >
-                      <div className="w-1.5 h-1.5 rounded-full" style={{ background: `rgba(${rgb},0.70)` }} />
-                    </span>
-                    <span className="text-muted-foreground leading-relaxed">{rec}</span>
-                  </li>
-                ))}
-              </ul>
-            </Section>
+                      {dep}
+                    </Badge>
+                  ))}
+                </div>
+              </Section>
 
-            {/* Recent Outputs */}
-            <div className="bg-secondary/30 rounded-xl p-4 border border-border/30">
-              <h4 className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3">
-                Recent Outputs
-              </h4>
-              <ul className="space-y-1.5">
-                {agent.outputs.map((output, i) => (
-                  <li key={i} className="flex items-start gap-2 text-sm">
-                    <span className="w-1 h-1 rounded-full bg-success/70 mt-2 shrink-0" />
-                    <span className="text-foreground/80 leading-relaxed">{output}</span>
-                  </li>
-                ))}
-              </ul>
+              <Separator className="bg-border/40" />
+
+              <Section title="Recommendations">
+                <ul className="space-y-2">
+                  {agent.recommendations.map((rec, i) => (
+                    <li key={i} className="flex items-start gap-2.5 text-sm">
+                      <span
+                        className="w-5 h-5 rounded-md flex items-center justify-center shrink-0 mt-0.5"
+                        style={{
+                          background: `rgba(${rgb},0.08)`,
+                          border: `1px solid rgba(${rgb},0.20)`,
+                        }}
+                      >
+                        <div className="w-1.5 h-1.5 rounded-full" style={{ background: `rgba(${rgb},0.70)` }} />
+                      </span>
+                      <span className="text-muted-foreground leading-relaxed">{rec}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Section>
+
+              {/* Recent Outputs */}
+              <div className="bg-secondary/30 rounded-xl p-4 border border-border/30">
+                <h4 className="text-[10px] font-semibold text-muted-foreground/70 uppercase tracking-widest mb-3">
+                  Recent Outputs
+                </h4>
+                <ul className="space-y-1.5">
+                  {agent.outputs.map((output, i) => (
+                    <li key={i} className="flex items-start gap-2 text-sm">
+                      <span className="w-1 h-1 rounded-full bg-success/70 mt-2 shrink-0" />
+                      <span className="text-foreground/80 leading-relaxed">{output}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             </div>
-          </div>
+          )}
         </div>
     </div>
   );
