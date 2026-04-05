@@ -5,9 +5,8 @@ import { Bell, ChevronRight } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { agents, type AgentStatus } from '@/lib/mock-data'
-
-const API = 'http://localhost:8001'
+import { API_BASE } from '@/lib/api/config'
+import type { Agent, AgentStatus } from '@/lib/mock-data'
 
 type NotificationItem = {
   id: string
@@ -63,16 +62,17 @@ function Dot({ className }: { className?: string }) {
 
 interface NotificationsPopoverProps {
   onViewAll: () => void
+  agents: Agent[]
 }
 
-export function NotificationsPopover({ onViewAll }: NotificationsPopoverProps) {
+export function NotificationsPopover({ onViewAll, agents }: NotificationsPopoverProps) {
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
   const [loading, setLoading] = useState(false)
 
   const fetchNotifications = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API}/api/notifications?limit=20`)
+      const res = await fetch(`${API_BASE}/api/notifications?limit=20`)
       if (!res.ok) return
       const data: NotificationItem[] = await res.json()
       setNotifications(data)
@@ -102,7 +102,7 @@ export function NotificationsPopover({ onViewAll }: NotificationsPopoverProps) {
     // Persist each in parallel
     await Promise.allSettled(
       unread.map((n) =>
-        fetch(`${API}/api/notifications/${n.id}/read`, { method: 'POST' }),
+        fetch(`${API_BASE}/api/notifications/${n.id}/read`, { method: 'POST' }),
       ),
     )
   }
@@ -113,7 +113,7 @@ export function NotificationsPopover({ onViewAll }: NotificationsPopoverProps) {
       prev.map((n) => (n.id === id ? { ...n, read: true } : n)),
     )
     try {
-      await fetch(`${API}/api/notifications/${id}/read`, { method: 'POST' })
+      await fetch(`${API_BASE}/api/notifications/${id}/read`, { method: 'POST' })
     } catch {
       // Silently degrade
     }

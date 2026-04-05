@@ -8,11 +8,13 @@ import {
   ChevronUp,
   GitCommit,
   Bell,
+  MessageSquareText,
   RefreshCw,
   Scale,
   X,
   Zap,
 } from 'lucide-react';
+import { API_BASE } from '@/lib/api/config';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 
@@ -58,14 +60,21 @@ interface LegalEvent {
   created_at: string | null;
 }
 
+interface OutreachEvent {
+  id: string;
+  source_agent: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  summary: string | null;
+  priority: string;
+  timestamp: string | null;
+}
+
 type ActivityEntry =
   | { kind: 'notification'; data: Notification; sortKey: string }
   | { kind: 'commit'; data: Commit; sortKey: string }
-  | { kind: 'legal_event'; data: LegalEvent; sortKey: string };
-
-// ── API base ──────────────────────────────────────────────────────────────────
-
-const API = 'http://localhost:8001';
+  | { kind: 'legal_event'; data: LegalEvent; sortKey: string }
+  | { kind: 'outreach_event'; data: OutreachEvent; sortKey: string };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -124,6 +133,29 @@ const legalEventStyle: Record<string, { label: string; iconClass: string; badgeC
     label: 'Compliance',
     iconClass: 'text-destructive',
     badgeClass: 'text-destructive border-destructive/30 bg-destructive/8',
+  },
+};
+
+const outreachEventStyle: Record<string, { label: string; iconClass: string; badgeClass: string }> = {
+  reply_received: {
+    label: 'Reply',
+    iconClass: 'text-primary',
+    badgeClass: 'text-primary border-primary/30 bg-primary/8',
+  },
+  lead_converted: {
+    label: 'Converted',
+    iconClass: 'text-emerald-400',
+    badgeClass: 'text-emerald-400 border-emerald-400/30 bg-emerald-400/8',
+  },
+  objection_heard: {
+    label: 'Objection',
+    iconClass: 'text-warning',
+    badgeClass: 'text-warning border-warning/30 bg-warning/8',
+  },
+  outreach_sent: {
+    label: 'Sent',
+    iconClass: 'text-sky-400',
+    badgeClass: 'text-sky-400 border-sky-400/30 bg-sky-400/8',
   },
 };
 
@@ -345,6 +377,50 @@ function ActivityEntryRow({ entry, isLast }: { entry: ActivityEntry; isLast: boo
     );
   }
 
+  if (entry.kind === 'outreach_event') {
+    const ev = entry.data;
+    const style = outreachEventStyle[ev.event_type] ?? {
+      label: 'Outreach',
+      iconClass: 'text-muted-foreground',
+      badgeClass: 'text-muted-foreground border-border/60 bg-secondary/30',
+    };
+    const payload = ev.payload ?? {};
+    const detail = (() => {
+      if (payload.contact_name) return String(payload.contact_name);
+      if (payload.objection_text) return String(payload.objection_text);
+      return ev.summary ?? ev.event_type;
+    })();
+    return (
+      <div className="flex gap-3 relative">
+        {!isLast && (
+          <div className="absolute left-[11px] top-6 bottom-0 w-px bg-border/30" />
+        )}
+        <div className="shrink-0 mt-0.5 w-6 h-6 rounded-full bg-secondary/50 border border-border/50 flex items-center justify-center">
+          <MessageSquareText className={cn('w-3 h-3', style.iconClass)} />
+        </div>
+        <div className="flex-1 min-w-0 pb-3">
+          <div className="flex items-start gap-1.5 flex-wrap">
+            <span className="text-[11px] font-semibold text-foreground/85 leading-tight">{detail}</span>
+            <Badge variant="outline" className={cn('text-[9px] py-0 h-4 font-normal shrink-0', style.badgeClass)}>
+              {style.label}
+            </Badge>
+          </div>
+          {ev.summary && detail !== ev.summary && (
+            <p className="text-[11px] text-muted-foreground leading-relaxed mt-0.5 line-clamp-2">
+              {ev.summary}
+            </p>
+          )}
+          <div className="flex items-center gap-2 mt-1">
+            <span className="text-[10px] text-muted-foreground/50">{agentLabel(ev.source_agent)}</span>
+            {ev.timestamp && (
+              <span className="text-[10px] text-muted-foreground/40">{timeAgo(ev.timestamp)}</span>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Legal event
   if (entry.kind === 'legal_event') {
     const ev = entry.data;
@@ -453,7 +529,7 @@ export function RightActivityPanel({ open, onClose }: RightActivityPanelProps) {
   const fetchApprovals = useCallback(async () => {
     setLoadingApprovals(true);
     try {
-      const res = await fetch(`${API}/api/approvals?status=pending`);
+      const res = await fetch(`${API_BASE}/api/approvals?status=pending`);
       if (!res.ok) throw new Error('Failed to fetch approvals');
       const data: Approval[] = await res.json();
       setApprovals(data);
@@ -467,10 +543,11 @@ export function RightActivityPanel({ open, onClose }: RightActivityPanelProps) {
   const fetchActivity = useCallback(async () => {
     setLoadingActivity(true);
     try {
-      const [notifRes, commitsRes, legalEventsRes] = await Promise.all([
-        fetch(`${API}/api/notifications?limit=30`),
-        fetch(`${API}/api/dev/commits?limit=20`),
-        fetch(`${API}/api/events?agent=legal&limit=30`),
+      const [notifRes, commitsRes, legalEventsRes, outreachEventsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/notifications?limit=30`),
+        fetch(`${API_BASE}/api/dev/commits?limit=20`),
+        fetch(`${API_BASE}/api/events?agent=legal&limit=30`),
+        fetch(`${API_BASE}/api/events?agent=outreach&limit=30`),
       ]);
 
       const entries: ActivityEntry[] = [];
@@ -493,6 +570,12 @@ export function RightActivityPanel({ open, onClose }: RightActivityPanelProps) {
         const legalEvents: LegalEvent[] = await legalEventsRes.json();
         for (const ev of legalEvents) {
           entries.push({ kind: 'legal_event', data: ev, sortKey: ev.created_at ?? '0' });
+        }
+      }
+      if (outreachEventsRes.ok) {
+        const outreachEvents: OutreachEvent[] = await outreachEventsRes.json();
+        for (const ev of outreachEvents) {
+          entries.push({ kind: 'outreach_event', data: ev, sortKey: ev.timestamp ?? '0' });
         }
       }
 
@@ -553,7 +636,7 @@ export function RightActivityPanel({ open, onClose }: RightActivityPanelProps) {
   const handleDecide = useCallback(
     async (id: string, status: 'approved' | 'rejected') => {
       try {
-        const res = await fetch(`${API}/api/approvals/${id}/respond`, {
+        const res = await fetch(`${API_BASE}/api/approvals/${id}/respond`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status }),
@@ -672,4 +755,3 @@ export function RightActivityPanel({ open, onClose }: RightActivityPanelProps) {
     </div>
   );
 }
-

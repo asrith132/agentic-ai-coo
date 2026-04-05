@@ -1,209 +1,100 @@
 'use client'
 
-import { Bell, CheckCheck, Download, Settings2 } from 'lucide-react'
 import * as React from 'react'
+import { Bell, CheckCheck, Loader2, Settings2 } from 'lucide-react'
 
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { API_BASE } from '@/lib/api/config'
 
-type Notification = {
-  id: number
-  type: string
-  user: {
-    name: string
-    avatar: string
-    fallback: string
-  }
-  action: string
-  target?: string
-  content?: string
-  timestamp: string
-  timeAgo: string
-  isRead: boolean
-  hasActions?: boolean
-  file?: {
-    name: string
-    size: string
-    type: string
-  }
+type NotificationRecord = {
+  id: string
+  agent: string
+  title: string
+  body: string
+  priority: string
+  read: boolean
+  created_at: string | null
 }
 
-const notifications: Notification[] = [
-  {
-    id: 1,
-    type: 'comment',
-    user: {
-      name: 'Finance Agent',
-      avatar: 'https://api.dicebear.com/7.x/notionists/svg?seed=Finance',
-      fallback: 'F',
-    },
-    action: 'flagged a blocker in',
-    target: 'Runway model',
-    content:
-      'I need revenue assumptions confirmed before I can finalize burn and fundraising recommendations.',
-    timestamp: 'Today 9:12 AM',
-    timeAgo: '12 min ago',
-    isRead: false,
-  },
-  {
-    id: 2,
-    type: 'follow',
-    user: {
-      name: 'Marketing Agent',
-      avatar: 'https://api.dicebear.com/7.x/notionists/svg?seed=Marketing',
-      fallback: 'G',
-    },
-    action: 'posted an update in',
-    target: 'Launch strategy',
-    timestamp: 'Today 8:54 AM',
-    timeAgo: '30 min ago',
-    isRead: false,
-  },
-  {
-    id: 3,
-    type: 'invitation',
-    user: {
-      name: 'Outreach Agent',
-      avatar: 'https://api.dicebear.com/7.x/notionists/svg?seed=Outreach',
-      fallback: 'R',
-    },
-    action: 'requested approval for',
-    target: 'founder outreach sequence',
-    timestamp: 'Today 8:22 AM',
-    timeAgo: '1 hour ago',
-    isRead: true,
-    hasActions: true,
-  },
-  {
-    id: 4,
-    type: 'file_share',
-    user: {
-      name: 'Research Agent',
-      avatar: 'https://api.dicebear.com/7.x/notionists/svg?seed=Research',
-      fallback: 'R',
-    },
-    action: 'shared a file in',
-    target: 'Competitor brief',
-    file: {
-      name: 'category-analysis.pdf',
-      size: '2.4 MB',
-      type: 'PDF',
-    },
-    timestamp: 'Today 7:40 AM',
-    timeAgo: '2 hours ago',
-    isRead: true,
-  },
-  {
-    id: 5,
-    type: 'mention',
-    user: {
-      name: 'Product Agent',
-      avatar: 'https://api.dicebear.com/7.x/notionists/svg?seed=Product',
-      fallback: 'P',
-    },
-    action: 'mentioned you in',
-    target: 'MVP scope',
-    content:
-      'Can you confirm whether we should optimize for speed-to-launch or stronger onboarding in v1?',
-    timestamp: 'Yesterday 5:30 PM',
-    timeAgo: '1 day ago',
-    isRead: true,
-  },
-  {
-    id: 6,
-    type: 'like',
-    user: {
-      name: 'Engineering Agent',
-      avatar: 'https://api.dicebear.com/7.x/notionists/svg?seed=Engineering',
-      fallback: 'E',
-    },
-    action: 'completed work in',
-    target: 'Architecture proposal',
-    timestamp: 'Yesterday 3:15 PM',
-    timeAgo: '1 day ago',
-    isRead: true,
-  },
-]
+function timeAgo(iso: string | null) {
+  if (!iso) return 'just now'
+  const diff = Date.now() - new Date(iso).getTime()
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
+}
 
-function NotificationItem({ notification }: { notification: Notification }) {
+function priorityBadge(priority: string) {
+  if (priority === 'urgent' || priority === 'high') return 'text-warning border-warning/30 bg-warning/8'
+  if (priority === 'low') return 'text-emerald-400 border-emerald-400/30 bg-emerald-400/8'
+  return 'text-primary border-primary/30 bg-primary/8'
+}
+
+function NotificationItem({
+  notification,
+  onRead,
+}: {
+  notification: NotificationRecord
+  onRead: (id: string) => Promise<void>
+}) {
+  const [submitting, setSubmitting] = React.useState(false)
+
+  const handleRead = async () => {
+    setSubmitting(true)
+    await onRead(notification.id)
+    setSubmitting(false)
+  }
+
   return (
     <div className="w-full py-4 first:pt-0 last:pb-0">
       <div className="flex gap-3">
-        <Avatar className="size-11">
-          <AvatarImage
-            src={notification.user.avatar || '/placeholder.svg'}
-            alt={`${notification.user.name}'s profile picture`}
-            className="object-cover ring-1 ring-border"
-          />
-          <AvatarFallback>{notification.user.fallback}</AvatarFallback>
-        </Avatar>
+        <div className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-border bg-card text-sm font-semibold">
+          {notification.agent.slice(0, 3).toUpperCase()}
+        </div>
 
         <div className="flex flex-1 flex-col space-y-2">
-          <div className="w-full items-start">
-            <div>
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-sm">
-                  <span className="font-medium">{notification.user.name}</span>
-                  <span className="text-muted-foreground"> {notification.action} </span>
-                  {notification.target && (
-                    <span className="font-medium">{notification.target}</span>
-                  )}
-                </div>
-                {!notification.isRead && (
-                  <div className="size-1.5 rounded-full bg-emerald-500" />
-                )}
+          <div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm">
+                <span className="font-medium">{notification.agent}</span>
+                <span className="text-muted-foreground"> updated </span>
+                <span className="font-medium">{notification.title}</span>
               </div>
-              <div className="flex items-center justify-between gap-2">
-                <div className="mt-0.5 text-xs text-muted-foreground">
-                  {notification.timestamp}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {notification.timeAgo}
-                </div>
+              {!notification.read && (
+                <div className="size-1.5 rounded-full bg-emerald-500" />
+              )}
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-2">
+              <div className="text-xs text-muted-foreground">
+                {notification.created_at ? new Date(notification.created_at).toLocaleString() : 'just now'}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {timeAgo(notification.created_at)}
               </div>
             </div>
           </div>
 
-          {notification.content && (
-            <div className="rounded-lg bg-muted p-2.5 text-sm tracking-[-0.006em]">
-              {notification.content}
-            </div>
-          )}
+          <div className="rounded-lg bg-muted p-2.5 text-sm tracking-[-0.006em]">
+            {notification.body}
+          </div>
 
-          {notification.file && (
-            <div className="flex items-center gap-2 rounded-lg bg-muted p-2">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-border bg-card">
-                <span className="text-[11px] font-semibold text-primary">
-                  {notification.file.type}
-                </span>
-              </div>
-              <div className="flex-1">
-                <div className="text-sm font-medium">
-                  {notification.file.name}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  {notification.file.type} • {notification.file.size}
-                </div>
-              </div>
-              <Button variant="ghost" size="icon" className="size-8">
-                <Download className="size-4" />
+          <div className="flex items-center justify-between gap-3">
+            <Badge variant="outline" className={priorityBadge(notification.priority)}>
+              {notification.priority}
+            </Badge>
+            {!notification.read && (
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleRead} disabled={submitting}>
+                {submitting ? <Loader2 className="size-3 animate-spin" /> : 'Mark read'}
               </Button>
-            </div>
-          )}
-
-          {notification.hasActions && (
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" className="h-7 text-xs">
-                Decline
-              </Button>
-              <Button size="sm" className="h-7 text-xs">
-                Approve
-              </Button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -212,30 +103,63 @@ function NotificationItem({ notification }: { notification: Notification }) {
 
 export function NotificationsMenu() {
   const [activeTab, setActiveTab] = React.useState<string>('all')
+  const [notifications, setNotifications] = React.useState<NotificationRecord[]>([])
+  const [loading, setLoading] = React.useState(true)
 
-  const verifiedCount = notifications.filter(
-    (notification) =>
-      notification.type === 'follow' || notification.type === 'like',
-  ).length
-  const mentionCount = notifications.filter(
-    (notification) => notification.type === 'mention',
+  const fetchNotifications = React.useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/notifications?limit=50`)
+      if (!res.ok) throw new Error('failed')
+      const data: NotificationRecord[] = await res.json()
+      setNotifications(data)
+    } catch {
+      setNotifications([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    fetchNotifications()
+  }, [fetchNotifications])
+
+  const unreadCount = notifications.filter((notification) => !notification.read).length
+  const urgentCount = notifications.filter(
+    (notification) => notification.priority === 'high' || notification.priority === 'urgent',
   ).length
 
   const filteredNotifications = React.useMemo(() => {
     switch (activeTab) {
-      case 'verified':
+      case 'unread':
+        return notifications.filter((notification) => !notification.read)
+      case 'priority':
         return notifications.filter(
-          (notification) =>
-            notification.type === 'follow' || notification.type === 'like',
-        )
-      case 'mentions':
-        return notifications.filter(
-          (notification) => notification.type === 'mention',
+          (notification) => notification.priority === 'high' || notification.priority === 'urgent',
         )
       default:
         return notifications
     }
-  }, [activeTab])
+  }, [activeTab, notifications])
+
+  const handleRead = React.useCallback(async (id: string) => {
+    setNotifications((current) => current.map((notification) => (
+      notification.id === id ? { ...notification, read: true } : notification
+    )))
+    try {
+      await fetch(`${API_BASE}/api/notifications/${id}/read`, { method: 'POST' })
+    } catch {}
+  }, [])
+
+  const handleMarkAllRead = React.useCallback(async () => {
+    const unread = notifications.filter((notification) => !notification.read)
+    setNotifications((current) => current.map((notification) => ({ ...notification, read: true })))
+    await Promise.allSettled(
+      unread.map((notification) =>
+        fetch(`${API_BASE}/api/notifications/${notification.id}/read`, { method: 'POST' }),
+      ),
+    )
+  }, [notifications])
 
   return (
     <Card className="flex w-full max-w-[760px] flex-col gap-6 border-border/60 bg-card/80 p-4 shadow-2xl shadow-black/20 backdrop-blur-xl md:p-8">
@@ -246,14 +170,14 @@ export function NotificationsMenu() {
               Your notifications
             </h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              Agent updates, approvals, blockers, and shared outputs.
+              Agent updates, blockers, approvals, and recent system alerts.
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Button className="size-8" variant="ghost" size="icon" aria-label="Mark all read">
+            <Button className="size-8" variant="ghost" size="icon" aria-label="Mark all read" onClick={handleMarkAllRead}>
               <CheckCheck className="size-4.5 text-muted-foreground" />
             </Button>
-            <Button className="size-8" variant="ghost" size="icon" aria-label="Notification settings">
+            <Button className="size-8" variant="ghost" size="icon" aria-label="Refresh notifications" onClick={fetchNotifications}>
               <Settings2 className="size-4.5 text-muted-foreground" />
             </Button>
           </div>
@@ -267,16 +191,16 @@ export function NotificationsMenu() {
           <div className="flex items-center justify-between">
             <TabsList className="**:data-[slot=badge]:size-5 **:data-[slot=badge]:rounded-full **:data-[slot=badge]:bg-muted-foreground/30 [&_button]:gap-1.5">
               <TabsTrigger value="all">
-                View all
+                All
                 <Badge variant="secondary">{notifications.length}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="verified">
-                Verified
-                <Badge variant="secondary">{verifiedCount}</Badge>
+              <TabsTrigger value="unread">
+                Unread
+                <Badge variant="secondary">{unreadCount}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="mentions">
-                Mentions
-                <Badge variant="secondary">{mentionCount}</Badge>
+              <TabsTrigger value="priority">
+                Priority
+                <Badge variant="secondary">{urgentCount}</Badge>
               </TabsTrigger>
             </TabsList>
           </div>
@@ -285,11 +209,17 @@ export function NotificationsMenu() {
 
       <CardContent className="h-full p-0">
         <div className="space-y-0 divide-y divide-dashed divide-border">
-          {filteredNotifications.length > 0 ? (
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
+              <Loader2 className="mr-2 size-4 animate-spin" />
+              Loading notifications…
+            </div>
+          ) : filteredNotifications.length > 0 ? (
             filteredNotifications.map((notification) => (
               <NotificationItem
                 key={notification.id}
                 notification={notification}
+                onRead={handleRead}
               />
             ))
           ) : (

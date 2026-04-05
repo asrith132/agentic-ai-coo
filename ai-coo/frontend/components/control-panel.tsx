@@ -3,16 +3,25 @@
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { commandCenterData, activityFeed, agents, ActivityItem } from '@/lib/mock-data';
+import type { ActivityItem, Agent } from '@/lib/mock-data';
+
+type CommandSummary = {
+  topPriorities: string[]
+  nextActions: string[]
+  criticalRisks: string[]
+}
 
 type Tab = 'command' | 'activity' | 'risks';
 
 interface SidebarProps {
   open: boolean;
   onClose: () => void;
+  agents: Agent[];
+  activity: ActivityItem[];
+  command: CommandSummary;
 }
 
-export function ControlPanel({ open, onClose }: SidebarProps) {
+export function ControlPanel({ open, onClose, agents, activity, command }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<Tab>('command');
 
   useEffect(() => {
@@ -71,9 +80,9 @@ export function ControlPanel({ open, onClose }: SidebarProps) {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto p-4">
-        {activeTab === 'command' && <CommandContent />}
-        {activeTab === 'activity' && <ActivityContent />}
-        {activeTab === 'risks' && <RisksContent />}
+        {activeTab === 'command' && <CommandContent command={command} />}
+        {activeTab === 'activity' && <ActivityContent activity={activity} />}
+        {activeTab === 'risks' && <RisksContent agents={agents} command={command} />}
       </div>
     </div>
   );
@@ -87,13 +96,13 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
-function CommandContent() {
+function CommandContent({ command }: { command: CommandSummary }) {
   return (
     <div className="space-y-6">
       <div>
         <SectionTitle>Top Priorities</SectionTitle>
         <ul className="space-y-2.5">
-          {commandCenterData.topPriorities.map((priority, i) => (
+          {command.topPriorities.map((priority, i) => (
             <li key={i} className="flex items-start gap-2.5 text-sm">
               <span className="w-5 h-5 rounded bg-primary/10 border border-primary/20 flex items-center justify-center text-[10px] font-bold text-primary shrink-0 mt-0.5">
                 {i + 1}
@@ -107,7 +116,7 @@ function CommandContent() {
       <div>
         <SectionTitle>Next Actions</SectionTitle>
         <ul className="space-y-2.5">
-          {commandCenterData.nextActions.map((action, i) => (
+          {command.nextActions.map((action, i) => (
             <li key={i} className="flex items-start gap-2.5 text-sm">
               <span className="w-5 h-5 rounded border border-border/60 flex items-center justify-center shrink-0 mt-0.5">
                 <div className="w-1.5 h-1.5 rounded-sm bg-muted-foreground/30" />
@@ -121,7 +130,7 @@ function CommandContent() {
   );
 }
 
-function ActivityContent() {
+function ActivityContent({ activity }: { activity: ActivityItem[] }) {
   const borderColors: Record<ActivityItem['type'], string> = {
     info: 'border-l-primary/50',
     warning: 'border-l-warning',
@@ -130,7 +139,7 @@ function ActivityContent() {
 
   return (
     <div className="space-y-2.5">
-      {activityFeed.map((item) => (
+      {activity.map((item) => (
         <div
           key={item.id}
           className={cn(
@@ -149,7 +158,7 @@ function ActivityContent() {
   );
 }
 
-function RisksContent() {
+function RisksContent({ agents, command }: { agents: Agent[]; command: CommandSummary }) {
   const allRisks = agents.flatMap((agent) =>
     agent.risks.map((risk) => ({ agent: agent.name, risk, status: agent.status }))
   );
@@ -159,7 +168,7 @@ function RisksContent() {
       <div>
         <SectionTitle>Critical Risks</SectionTitle>
         <ul className="space-y-2.5">
-          {commandCenterData.criticalRisks.map((risk, i) => (
+          {command.criticalRisks.map((risk, i) => (
             <li key={i} className="flex items-start gap-2.5">
               <span className="w-5 h-5 rounded bg-destructive/10 border border-destructive/25 flex items-center justify-center shrink-0 mt-0.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-destructive" />
@@ -182,6 +191,11 @@ function RisksContent() {
               <p className="text-[11px] text-muted-foreground">{agent.risks[0]}</p>
             </li>
           ))}
+          {agents.filter((a) => a.status === 'blocked').length === 0 && (
+            <li className="rounded-lg border border-border/40 bg-secondary/20 p-3 text-[11px] text-muted-foreground">
+              No blocked agents detected from current backend state.
+            </li>
+          )}
         </ul>
       </div>
 

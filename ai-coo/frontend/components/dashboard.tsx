@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Menu, PanelRight } from "lucide-react";
-import { agents, Agent } from "@/lib/mock-data";
+import { type Agent } from "@/lib/mock-data";
+import { useLiveDashboardData } from "@/lib/live-dashboard";
 import { cn } from "@/lib/utils";
 import { AccountPopover } from "./account-popover";
 import { AgentCard } from "./agent-card";
@@ -17,12 +18,17 @@ interface DashboardProps {
   onOpenNotifications: () => void
 }
 
+type MotionStyle = React.CSSProperties & Record<`--${string}`, string>
+
 export function Dashboard({ onOpenNotifications }: DashboardProps) {
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [isDark, setIsDark] = useState(true);
+  const {
+    data: { agents, activity, command },
+  } = useLiveDashboardData()
 
   useEffect(() => {
     const el = document.documentElement;
@@ -55,7 +61,7 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
     { left: "26%", top: "70%" },
     { left: "26%", top: "30%" },
   ];
-  const orbitMotionStyles = [
+  const orbitMotionStyles: MotionStyle[] = [
     {
       animationDelay: "0s",
       "--wiggle-duration": "4.6s",
@@ -134,8 +140,8 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
       "--wiggle-y-3": "-5px",
       "--wiggle-r-3": "0.8deg",
     },
-  ] as React.CSSProperties[];
-  const centerMotionStyle = {
+  ]
+  const centerMotionStyle: MotionStyle = {
     animationDelay: "0.4s",
     "--wiggle-duration": "5.1s",
     "--wiggle-x-1": "5px",
@@ -147,7 +153,7 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
     "--wiggle-x-3": "3px",
     "--wiggle-y-3": "-5px",
     "--wiggle-r-3": "0.5deg",
-  } as React.CSSProperties;
+  }
 
   const blockedCount = agents.filter((a) => a.status === "blocked").length;
   const thinkingCount = agents.filter((a) => a.status === "thinking").length;
@@ -200,7 +206,7 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
 
             {/* Right */}
             <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
-              <NotificationsPopover onViewAll={onOpenNotifications} />
+              <NotificationsPopover onViewAll={onOpenNotifications} agents={agents} />
               <AnimatedThemeToggler className="w-9 h-9 rounded-lg bg-white/8 hover:bg-white/15 flex items-center justify-center transition-colors duration-150 cursor-pointer [&_svg]:w-4 [&_svg]:h-4 [&_svg]:text-white" />
               <AccountPopover />
               <button
@@ -282,7 +288,13 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
         </main>
       </div>
 
-      <ControlPanel open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <ControlPanel
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        agents={agents}
+        activity={activity}
+        command={command}
+      />
 
       <AgentChatPanel
         agent={selectedAgent}

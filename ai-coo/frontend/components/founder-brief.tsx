@@ -1,9 +1,15 @@
 'use client';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { founderBrief } from '@/lib/mock-data';
+import { useLiveContext, deriveFounderBrief } from '@/lib/live-context';
+import { useLiveDashboardData } from '@/lib/live-dashboard';
 
 export function FounderBrief() {
+  const { context } = useLiveContext()
+  const {
+    data: { command },
+  } = useLiveDashboardData()
+
   // Parse the brief for styling
   const formatBrief = (text: string) => {
     const lines = text.split('\n\n');
@@ -19,6 +25,8 @@ export function FounderBrief() {
       );
     });
   };
+
+  const founderBrief = deriveFounderBrief(context, command)
 
   return (
     <Card className="bg-card/50 border-border/50 backdrop-blur-sm">

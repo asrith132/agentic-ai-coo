@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { AgentIcon, agentColors } from '@/lib/agent-visuals';
 import { LegalAgentSidebar } from '@/components/legal-agent-sidebar';
+import { OutreachAgentSidebar } from '@/components/outreach-agent-sidebar';
 
 interface AgentChatPanelProps {
   agent: Agent | null;
@@ -291,6 +292,8 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
           {/* Detail sections — legal agent gets live data, others get mock */}
           {agent.id === 'legal' ? (
             <LegalAgentSidebar rgb={rgb} color={color} />
+          ) : agent.id === 'outreach-agent' ? (
+            <OutreachAgentSidebar rgb={rgb} color={color} />
           ) : (
             <div className="flex-1 overflow-y-auto p-5 space-y-5">
               <Section title="Summary">

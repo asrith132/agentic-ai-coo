@@ -1,9 +1,13 @@
 'use client';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { commandCenterData } from '@/lib/mock-data';
+import { useLiveDashboardData } from '@/lib/live-dashboard';
 
 export function CommandCenter() {
+  const {
+    data: { command },
+  } = useLiveDashboardData()
+
   return (
     <Card className="bg-card/50 border-border/50 backdrop-blur-sm h-full">
       <CardHeader className="pb-3">
@@ -21,7 +25,7 @@ export function CommandCenter() {
             Top Priorities
           </h4>
           <ul className="space-y-2">
-            {commandCenterData.topPriorities.map((priority, i) => (
+            {command.topPriorities.map((priority, i) => (
               <li key={i} className="flex items-start gap-2 text-xs">
                 <span className="w-4 h-4 rounded bg-primary/10 border border-primary/20 flex items-center justify-center text-[10px] font-bold text-primary shrink-0">
                   {i + 1}
@@ -38,7 +42,7 @@ export function CommandCenter() {
             Critical Risks
           </h4>
           <ul className="space-y-2">
-            {commandCenterData.criticalRisks.map((risk, i) => (
+            {command.criticalRisks.map((risk, i) => (
               <li key={i} className="flex items-start gap-2 text-xs">
                 <span className="w-4 h-4 rounded bg-warning/10 border border-warning/30 flex items-center justify-center shrink-0">
                   <div className="w-1.5 h-1.5 rounded-full bg-warning" />
@@ -55,7 +59,7 @@ export function CommandCenter() {
             Next Actions
           </h4>
           <ul className="space-y-2">
-            {commandCenterData.nextActions.map((action, i) => (
+            {command.nextActions.map((action, i) => (
               <li key={i} className="flex items-start gap-2 text-xs">
                 <span className="w-4 h-4 rounded border border-border/50 flex items-center justify-center shrink-0">
                   <div className="w-1.5 h-1.5 rounded-sm bg-muted-foreground/30" />

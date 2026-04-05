@@ -1,7 +1,8 @@
 'use client';
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { activityFeed, ActivityItem } from '@/lib/mock-data';
+import { useLiveDashboardData } from '@/lib/live-dashboard';
+import type { ActivityItem } from '@/lib/mock-data';
 import { cn } from '@/lib/utils';
 
 const typeStyles = {
@@ -11,6 +12,10 @@ const typeStyles = {
 };
 
 export function ActivityFeed() {
+  const {
+    data: { activity },
+  } = useLiveDashboardData()
+
   return (
     <Card className="bg-card/50 border-border/50 backdrop-blur-sm h-full">
       <CardHeader className="pb-3">
@@ -22,7 +27,7 @@ export function ActivityFeed() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {activityFeed.map((item) => (
+        {activity.map((item) => (
           <ActivityItemCard key={item.id} item={item} />
         ))}
       </CardContent>

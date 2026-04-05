@@ -2,10 +2,13 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { techStackItems } from '@/lib/mock-data';
+import { deriveTechStack, useLiveContext } from '@/lib/live-context';
 import { cn } from '@/lib/utils';
 
 export function TechStackPanel() {
+  const { context } = useLiveContext()
+  const techStackItems = deriveTechStack(context)
+
   return (
     <Card className="bg-card/50 border-border/50 backdrop-blur-sm">
       <CardHeader className="pb-3">
@@ -16,6 +19,11 @@ export function TechStackPanel() {
       </CardHeader>
       <CardContent>
         <div className="flex flex-wrap gap-2">
+          {techStackItems.length === 0 && (
+            <span className="text-xs text-muted-foreground">
+              No tech stack has been stored in global context yet.
+            </span>
+          )}
           {techStackItems.map((tech, i) => (
             <Badge
               key={i}

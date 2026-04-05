@@ -17,10 +17,9 @@ import {
   Scale,
   Sparkles,
 } from 'lucide-react';
+import { API_BASE } from '@/lib/api/config';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
-
-const API = 'http://localhost:8001';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -361,13 +360,13 @@ export function LegalAgentSidebar({ rgb, color }: LegalAgentSidebarProps) {
     setLoading(true);
     try {
       if (t === 'deadlines') {
-        const res = await fetch(`${API}/api/legal/deadlines?days=30`);
+        const res = await fetch(`${API_BASE}/api/legal/deadlines?days=30`);
         if (res.ok) setDeadlines((await res.json()).items ?? []);
       } else if (t === 'checklist') {
-        const res = await fetch(`${API}/api/legal/checklist`);
+        const res = await fetch(`${API_BASE}/api/legal/checklist`);
         if (res.ok) setChecklist((await res.json()).items ?? []);
       } else {
-        const res = await fetch(`${API}/api/legal/documents`);
+        const res = await fetch(`${API_BASE}/api/legal/documents`);
         if (res.ok) setDocuments((await res.json()).documents ?? []);
       }
     } catch { /* backend not running */ }
@@ -381,7 +380,7 @@ export function LegalAgentSidebar({ rgb, color }: LegalAgentSidebarProps) {
   const handleRunCheck = async () => {
     setRunningCheck(true);
     try {
-      const res = await fetch(`${API}/api/legal/run`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/api/legal/run`, { method: 'POST' });
       if (res.ok) {
         showToast('Deadline check queued');
         setTimeout(() => fetchTab('deadlines'), 1500);
@@ -395,7 +394,7 @@ export function LegalAgentSidebar({ rgb, color }: LegalAgentSidebarProps) {
   const handleGenerate = async (values: Record<string, string>) => {
     setGenerating(true);
     try {
-      const res = await fetch(`${API}/api/legal/generate`, {
+      const res = await fetch(`${API_BASE}/api/legal/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(values),
@@ -416,7 +415,7 @@ export function LegalAgentSidebar({ rgb, color }: LegalAgentSidebarProps) {
   const handleDraft = async (itemId: string) => {
     setDrafting(itemId);
     try {
-      const res = await fetch(`${API}/api/legal/draft/${itemId}`, {
+      const res = await fetch(`${API_BASE}/api/legal/draft/${itemId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ context: '' }),
@@ -425,7 +424,7 @@ export function LegalAgentSidebar({ rgb, color }: LegalAgentSidebarProps) {
         const data = await res.json();
         showToast(`Draft ready: ${data.title ?? 'document'}`);
         // Refresh both checklist and documents
-        await Promise.all([fetchTab('checklist'), fetch(`${API}/api/legal/documents`).then(async (r) => {
+        await Promise.all([fetchTab('checklist'), fetch(`${API_BASE}/api/legal/documents`).then(async (r) => {
           if (r.ok) setDocuments((await r.json()).documents ?? []);
         })]);
       } else {
