@@ -1,55 +1,42 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Bell, ChevronRight } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { agents, type AgentStatus } from '@/lib/mock-data'
 
+const API = 'http://localhost:8001'
+
 type NotificationItem = {
-  id: number
+  id: string
+  agent: string
   title: string
   body: string
-  timestamp: string
-  unread: boolean
-  tone: 'default' | 'warning' | 'success'
+  priority: string   // low | medium | high | urgent
+  read: boolean
+  created_at: string | null
 }
 
-const initialNotifications: NotificationItem[] = [
-  {
-    id: 1,
-    title: 'Finance needs input',
-    body: 'Runway modeling is blocked until revenue assumptions are confirmed.',
-    timestamp: '2 min ago',
-    unread: true,
-    tone: 'warning',
-  },
-  {
-    id: 2,
-    title: 'Product updated priorities',
-    body: 'The PM agent narrowed the MVP to the top three launch-critical features.',
-    timestamp: '7 min ago',
-    unread: true,
-    tone: 'default',
-  },
-  {
-    id: 3,
-    title: 'Engineering is ready',
-    body: 'Architecture is complete and implementation estimates are available.',
-    timestamp: '12 min ago',
-    unread: false,
-    tone: 'success',
-  },
-  {
-    id: 4,
-    title: 'Research found competition risk',
-    body: 'A direct competitor is entering the market with a similar offer next month.',
-    timestamp: '23 min ago',
-    unread: false,
-    tone: 'warning',
-  },
-]
+// Map backend priority → display tone
+function priorityToTone(priority: string): 'default' | 'warning' | 'success' {
+  if (priority === 'urgent' || priority === 'high') return 'warning'
+  if (priority === 'low') return 'success'
+  return 'default'
+}
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return ''
+  const diff = Date.now() - new Date(iso).getTime()
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  return `${Math.floor(h / 24)}d ago`
+}
 
 const statusAccent: Record<AgentStatus, string> = {
   thinking: 'bg-primary',
@@ -79,35 +66,61 @@ interface NotificationsPopoverProps {
 }
 
 export function NotificationsPopover({ onViewAll }: NotificationsPopoverProps) {
-  const [notifications, setNotifications] = useState(initialNotifications)
+  const [notifications, setNotifications] = useState<NotificationItem[]>([])
+  const [loading, setLoading] = useState(false)
 
-  const unreadCount = notifications.filter((notification) => notification.unread).length
+  const fetchNotifications = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`${API}/api/notifications?limit=20`)
+      if (!res.ok) return
+      const data: NotificationItem[] = await res.json()
+      setNotifications(data)
+    } catch {
+      // Backend not running — stay empty
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  // Fetch on mount
+  useEffect(() => {
+    fetchNotifications()
+  }, [fetchNotifications])
+
+  const unreadCount = notifications.filter((n) => n.read === false).length
+
   const blockedAgents = useMemo(
     () => agents.filter((agent) => agent.status === 'blocked'),
     [],
   )
 
-  const handleMarkAllAsRead = () => {
-    setNotifications((current) =>
-      current.map((notification) => ({
-        ...notification,
-        unread: false,
-      })),
-    )
-  }
-
-  const handleNotificationClick = (id: number) => {
-    setNotifications((current) =>
-      current.map((notification) =>
-        notification.id === id
-          ? { ...notification, unread: false }
-          : notification,
+  const handleMarkAllAsRead = async () => {
+    const unread = notifications.filter((n) => !n.read)
+    // Optimistic update
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })))
+    // Persist each in parallel
+    await Promise.allSettled(
+      unread.map((n) =>
+        fetch(`${API}/api/notifications/${n.id}/read`, { method: 'POST' }),
       ),
     )
   }
 
+  const handleNotificationClick = async (id: string) => {
+    // Optimistic update
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, read: true } : n)),
+    )
+    try {
+      await fetch(`${API}/api/notifications/${id}/read`, { method: 'POST' })
+    } catch {
+      // Silently degrade
+    }
+  }
+
   return (
-    <Popover>
+    <Popover onOpenChange={(open) => { if (open) fetchNotifications() }}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -181,53 +194,69 @@ export function NotificationsPopover({ onViewAll }: NotificationsPopoverProps) {
             </div>
           )}
 
-          {notifications.map((notification) => (
-            <div
-              key={notification.id}
-              className="rounded-lg border border-border/90 bg-secondary/20 px-3 py-3 text-sm transition-colors hover:bg-accent/40 hover:border-foreground/20"
-            >
-              <div className="relative flex items-start pe-3">
-                <div className="flex-1 space-y-1">
-                  <button
-                    type="button"
-                    className="text-left text-foreground/80 after:absolute after:inset-0 cursor-pointer"
-                    onClick={() => handleNotificationClick(notification.id)}
-                  >
-                    <span className="font-medium text-foreground">{notification.title}</span>
-                    <span className="block text-foreground/70">{notification.body}</span>
-                  </button>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span>{notification.timestamp}</span>
-                    <span
-                      className="inline-flex items-center rounded-full bg-background/70 px-2 py-0.5"
-                    >
-                      <span
-                      className={
-                        notification.tone === 'warning'
-                          ? 'text-destructive'
-                          : notification.tone === 'success'
-                            ? 'text-emerald-400'
-                            : 'text-primary'
-                      }
-                    >
-                      {notification.tone === 'warning'
-                        ? 'Risk'
-                        : notification.tone === 'success'
-                          ? 'Complete'
-                          : 'Update'}
-                    </span>
-                    </span>
-                  </div>
+          {loading && notifications.length === 0 && (
+            <div className="space-y-2">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="animate-pulse rounded-lg border border-border/50 bg-secondary/20 px-3 py-3 space-y-2">
+                  <div className="h-2.5 bg-secondary/70 rounded-full w-3/4" />
+                  <div className="h-2 bg-secondary/50 rounded-full w-full" />
                 </div>
-                {notification.unread && (
-                  <div className="absolute end-0 top-1 text-primary">
-                    <span className="sr-only">Unread</span>
-                    <Dot />
-                  </div>
-                )}
-              </div>
+              ))}
             </div>
-          ))}
+          )}
+
+          {!loading && notifications.length === 0 && (
+            <div className="py-6 text-center text-xs text-muted-foreground/50">
+              No notifications yet
+            </div>
+          )}
+
+          {notifications.map((notification) => {
+            const tone = priorityToTone(notification.priority)
+            return (
+              <div
+                key={notification.id}
+                className="rounded-lg border border-border/90 bg-secondary/20 px-3 py-3 text-sm transition-colors hover:bg-accent/40 hover:border-foreground/20"
+              >
+                <div className="relative flex items-start pe-3">
+                  <div className="flex-1 space-y-1">
+                    <button
+                      type="button"
+                      className="text-left text-foreground/80 after:absolute after:inset-0 cursor-pointer"
+                      onClick={() => handleNotificationClick(notification.id)}
+                    >
+                      <span className="font-medium text-foreground">{notification.title}</span>
+                      <span className="block text-foreground/70">{notification.body}</span>
+                    </button>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      {notification.created_at && (
+                        <span>{timeAgo(notification.created_at)}</span>
+                      )}
+                      <span className="inline-flex items-center rounded-full bg-background/70 px-2 py-0.5">
+                        <span
+                          className={
+                            tone === 'warning'
+                              ? 'text-destructive'
+                              : tone === 'success'
+                                ? 'text-emerald-400'
+                                : 'text-primary'
+                          }
+                        >
+                          {tone === 'warning' ? 'Risk' : tone === 'success' ? 'Complete' : 'Update'}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
+                  {!notification.read && (
+                    <div className="absolute end-0 top-1 text-primary">
+                      <span className="sr-only">Unread</span>
+                      <Dot />
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
         </div>
       </PopoverContent>
     </Popover>

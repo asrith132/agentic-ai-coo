@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Menu } from "lucide-react";
+import { Menu, PanelRight } from "lucide-react";
 import { agents, Agent } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 import { AccountPopover } from "./account-popover";
@@ -9,6 +9,7 @@ import { AgentCard } from "./agent-card";
 import { AgentChatPanel } from "./agent-chat-panel";
 import { ControlPanel } from "./control-panel";
 import { NotificationsPopover } from "./notifications-popover";
+import { RightActivityPanel } from "./right-activity-panel";
 import { AnimatedThemeToggler } from "./ui/animated-theme-toggler";
 import { StarsBackground } from "./ui/stars";
 
@@ -20,6 +21,7 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [isDark, setIsDark] = useState(true);
 
   useEffect(() => {
@@ -201,6 +203,16 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
               <NotificationsPopover onViewAll={onOpenNotifications} />
               <AnimatedThemeToggler className="w-9 h-9 rounded-lg bg-white/8 hover:bg-white/15 flex items-center justify-center transition-colors duration-150 cursor-pointer [&_svg]:w-4 [&_svg]:h-4 [&_svg]:text-white" />
               <AccountPopover />
+              <button
+                onClick={() => setActivityOpen((v) => !v)}
+                aria-label="Toggle activity panel"
+                className={cn(
+                  "w-9 h-9 rounded-lg flex items-center justify-center transition-colors duration-150 cursor-pointer",
+                  activityOpen ? "bg-white/20" : "bg-white/8 hover:bg-white/15"
+                )}
+              >
+                <PanelRight className="w-4 h-4 text-white" />
+              </button>
             </div>
           </div>
 
@@ -276,6 +288,11 @@ export function Dashboard({ onOpenNotifications }: DashboardProps) {
         agent={selectedAgent}
         open={drawerOpen}
         onClose={handleCloseDrawer}
+      />
+
+      <RightActivityPanel
+        open={activityOpen}
+        onClose={() => setActivityOpen(false)}
       />
     </StarsBackground>
   );
