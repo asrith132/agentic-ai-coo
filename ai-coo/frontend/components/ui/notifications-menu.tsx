@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Bell, CheckCheck, Loader2, Settings2 } from 'lucide-react'
+import { Bell, CheckCheck, ChevronDown, ChevronUp, Loader2, Settings2 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -45,6 +45,7 @@ function NotificationItem({
   onRead: (id: string) => Promise<void>
 }) {
   const [submitting, setSubmitting] = React.useState(false)
+  const [open, setOpen] = React.useState(false)
 
   const handleRead = async () => {
     setSubmitting(true)
@@ -53,49 +54,57 @@ function NotificationItem({
   }
 
   return (
-    <div className="w-full py-4 first:pt-0 last:pb-0">
-      <div className="flex gap-3">
-        <div className="flex size-11 shrink-0 items-center justify-center rounded-xl border border-border bg-card text-sm font-semibold">
-          {notification.agent.slice(0, 3).toUpperCase()}
-        </div>
-
-        <div className="flex flex-1 flex-col space-y-2">
-          <div>
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-sm">
-                <span className="font-medium">{notification.agent}</span>
-                <span className="text-muted-foreground"> updated </span>
-                <span className="font-medium">{notification.title}</span>
-              </div>
+    <div className="w-full py-2.5 first:pt-0 last:pb-0">
+      <div className="overflow-hidden rounded-xl border border-border/70 bg-secondary/15">
+        <button
+          type="button"
+          onClick={() => setOpen((current) => !current)}
+          className="flex w-full items-center gap-2.5 px-3 py-3 text-left transition-colors hover:bg-accent/20 cursor-pointer"
+        >
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-card text-[11px] font-semibold">
+            {notification.agent.slice(0, 3).toUpperCase()}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <p className="truncate text-[13px] font-medium text-foreground">
+                {notification.title}
+              </p>
               {!notification.read && (
-                <div className="size-1.5 rounded-full bg-emerald-500" />
+                <div className="size-1.5 shrink-0 rounded-full bg-emerald-500" />
               )}
             </div>
-            <div className="mt-1 flex items-center justify-between gap-2">
-              <div className="text-xs text-muted-foreground">
-                {notification.created_at ? new Date(notification.created_at).toLocaleString() : 'just now'}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                {timeAgo(notification.created_at)}
-              </div>
+            <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+              <span className="truncate">{notification.agent}</span>
+              <span className="shrink-0">{timeAgo(notification.created_at)}</span>
+              <Badge variant="outline" className={`h-4 px-1.5 text-[9px] ${priorityBadge(notification.priority)}`}>
+                {notification.priority}
+              </Badge>
             </div>
           </div>
+          {open ? (
+            <ChevronUp className="size-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="size-4 shrink-0 text-muted-foreground" />
+          )}
+        </button>
 
-          <div className="rounded-lg bg-muted p-2.5 text-sm tracking-[-0.006em]">
-            {notification.body}
-          </div>
-
-          <div className="flex items-center justify-between gap-3">
-            <Badge variant="outline" className={priorityBadge(notification.priority)}>
-              {notification.priority}
-            </Badge>
+        {open && (
+          <div className="space-y-3 border-t border-border/50 bg-background/20 px-3 py-3">
+            <div className="text-[11px] text-muted-foreground">
+              {notification.created_at ? new Date(notification.created_at).toLocaleString() : 'just now'}
+            </div>
+            <div className="rounded-lg bg-muted px-2.5 py-2 text-[12px] leading-relaxed tracking-[-0.006em] text-muted-foreground">
+              {notification.body}
+            </div>
             {!notification.read && (
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleRead} disabled={submitting}>
-                {submitting ? <Loader2 className="size-3 animate-spin" /> : 'Mark read'}
-              </Button>
+              <div className="flex justify-end">
+                <Button variant="outline" size="sm" className="h-6 px-2.5 text-[10px]" onClick={handleRead} disabled={submitting}>
+                  {submitting ? <Loader2 className="size-3 animate-spin" /> : 'Mark read'}
+                </Button>
+              </div>
             )}
           </div>
-        </div>
+        )}
       </div>
     </div>
   )
@@ -162,7 +171,7 @@ export function NotificationsMenu() {
   }, [notifications])
 
   return (
-    <Card className="flex w-full max-w-[760px] flex-col gap-6 border-border/60 bg-card/80 p-4 shadow-2xl shadow-black/20 backdrop-blur-xl md:p-8">
+    <Card className="flex w-full max-w-[760px] flex-col gap-5 border-border/60 bg-card/80 p-4 shadow-2xl shadow-black/20 backdrop-blur-xl md:p-6">
       <CardHeader className="p-0">
         <div className="flex items-center justify-between">
           <div>

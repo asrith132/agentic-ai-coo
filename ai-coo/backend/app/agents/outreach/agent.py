@@ -169,6 +169,14 @@ class OutreachAgent(BaseAgent):
             message["id"],
             {"approval_id": approval.id, "status": "pending_approval"},
         )
+        self.send_notification(
+            title=f"Approval requested for {contact.get('name')}",
+            body=(
+                f"Review the {email_type.replace('_', ' ')} outreach draft for "
+                f"{contact.get('name')} at {contact.get('company')} before it can be sent."
+            ),
+            priority="medium",
+        )
         return {"message": message, "approval": approval.model_dump()}
 
     def discover_contacts(

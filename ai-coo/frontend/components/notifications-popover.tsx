@@ -117,6 +117,7 @@ export function NotificationsPopover({ onViewAll, agents }: NotificationsPopover
     } catch {
       // Silently degrade
     }
+    onViewAll()
   }
 
   return (
@@ -216,17 +217,21 @@ export function NotificationsPopover({ onViewAll, agents }: NotificationsPopover
             return (
               <div
                 key={notification.id}
-                className="rounded-lg border border-border/90 bg-secondary/20 px-3 py-3 text-sm transition-colors hover:bg-accent/40 hover:border-foreground/20"
+                className="rounded-lg border border-border/90 bg-secondary/20 px-3 py-2.5 text-sm transition-colors hover:bg-accent/40 hover:border-foreground/20"
               >
                 <div className="relative flex items-start pe-3">
-                  <div className="flex-1 space-y-1">
+                  <div className="flex-1 space-y-1 min-w-0">
                     <button
                       type="button"
-                      className="text-left text-foreground/80 after:absolute after:inset-0 cursor-pointer"
+                      className="w-full text-left text-foreground/80 after:absolute after:inset-0 cursor-pointer"
                       onClick={() => handleNotificationClick(notification.id)}
                     >
-                      <span className="font-medium text-foreground">{notification.title}</span>
-                      <span className="block text-foreground/70">{notification.body}</span>
+                      <span className="block truncate font-medium text-foreground">
+                        {notification.title}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-muted-foreground">
+                        {notification.agent}
+                      </span>
                     </button>
                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
                       {notification.created_at && (
