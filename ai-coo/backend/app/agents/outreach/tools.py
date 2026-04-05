@@ -83,7 +83,7 @@ def _fetch_url(url: str, timeout: float = 6.0) -> str | None:
 
 
 def _extract_title(html: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     title = soup.title.string.strip() if soup.title and soup.title.string else ""
     return title[:300]
 
@@ -98,7 +98,7 @@ def search_web(query: str, max_results: int = 5) -> list[dict[str, str]]:
     if not html:
         return []
 
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     results: list[dict[str, str]] = []
     for result in soup.select(".result"):
         title_node = result.select_one(".result__title")
@@ -124,7 +124,7 @@ def search_google_profiles(query: str, max_results: int = 5) -> list[dict[str, s
     if not html:
         return []
 
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     text = _strip_html(html, max_chars=6000)
     profiles = _extract_social_profiles(text)
     results: list[dict[str, str]] = []
@@ -239,7 +239,7 @@ def enrich_company_pages(company: str) -> dict[str, Any]:
 
 
 def _strip_html(html: str, max_chars: int = 2500) -> str:
-    soup = BeautifulSoup(html, "lxml")
+    soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
     text = " ".join(soup.stripped_strings)

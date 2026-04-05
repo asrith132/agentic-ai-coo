@@ -42,7 +42,39 @@ def create_approval(
         .insert({"agent": agent, "action_type": action_type, "content": content})
         .execute()
     )
-    return Approval(**response.data[0])
+    approval = Approval(**response.data[0])
+
+    # Telegram notification with reply code
+    try:
+        import random
+        from app.core.notifications import send_telegram
+        from app.db.supabase_client import get_client as _get_client
+
+        code = str(random.randint(1000, 9999))
+        _get_client().table("user_settings").upsert({
+            "key": f"telegram_code:{code}",
+            "value": str(approval.id),
+        }).execute()
+
+        title = (
+            content.get("title")
+            or content.get("subject")
+            or content.get("draft", "")[:80]
+            or action_type.replace("_", " ").title()
+        )
+
+        message = (
+            f"🔔 <b>Approval Required — #{code}</b>\n\n"
+            f"<b>{title[:80]}</b>\n"
+            f"Agent: {agent}  |  Action: {action_type.replace('_', ' ')}\n\n"
+            f"Reply <b>{code} yes</b> to approve\n"
+            f"Reply <b>{code} no</b> to reject"
+        )
+        send_telegram(message)
+    except Exception:
+        pass
+
+    return approval
 
 
 def get_pending_approvals(agent: Optional[str] = None) -> List[Approval]:
@@ -104,6 +136,20 @@ def respond_to_approval(
         .execute()
     )
     return Approval(**response.data[0])
+
+
+def get_approval_status(approval_id: str) -> Optional[Approval]:
+    """Alias for get_approval — backward compat for older agent code."""
+    return get_approval(approval_id)
+
+
+async def request_approval(
+    agent: str,
+    action_type: str,
+    content: dict[str, Any],
+) -> Approval:
+    """Async shim wrapping create_approval for legacy agent code."""
+    return create_approval(agent=agent, action_type=action_type, content=content)
 
 
 def get_approval(approval_id: str) -> Optional[Approval]:

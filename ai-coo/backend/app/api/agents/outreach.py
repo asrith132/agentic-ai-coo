@@ -200,6 +200,12 @@ def _build_outreach_system_prompt(
         "Help with outreach strategy, draft emails, analyze the pipeline, and suggest next actions. "
         "Be concise and actionable.",
         "",
+        "When the user asks you to ADD a contact (founder, investor, customer, partner), respond with this block:",
+        "  <add_contact>",
+        '  {"name": "...", "company": "...", "role": "...", "contact_type": "partner|investor|customer", "email": null, "notes": "..."}',
+        "  </add_contact>",
+        "contact_type must be one of: partner, investor, customer",
+        "",
     ]
 
     # 2. Contacts pipeline
@@ -272,13 +278,16 @@ def outreach_chat(body: OutreachChatRequest):
     )
     uploaded_files = uploads_resp.data or []
 
+    from app.core.context import CONTEXT_EXTRACTION_PROMPT, extract_and_save_context
+
     system_prompt = _build_outreach_system_prompt(global_ctx, contacts, messages_data, uploaded_files)
+    system_prompt += CONTEXT_EXTRACTION_PROMPT
 
     messages = [{"role": m.role, "content": m.content} for m in body.history]
     messages.append({"role": "user", "content": body.message})
 
     try:
-        reply = llm.chat_conversation(
+        raw_reply = llm.chat_conversation(
             system_prompt=system_prompt,
             messages=messages,
             temperature=0.4,
@@ -287,4 +296,38 @@ def outreach_chat(body: OutreachChatRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    return {"reply": reply}
+    # Parse <add_contact> blocks and upsert directly into DB (no scraping needed)
+    import re as _re, json as _json, logging as _logging
+    _log = _logging.getLogger(__name__)
+    added_contacts: list[dict] = []
+
+    def _handle_add_contact(match: "_re.Match") -> str:
+        try:
+            data = _json.loads(match.group(1).strip())
+            name    = (data.get("name") or "").strip()
+            company = (data.get("company") or "").strip()
+            if not name or not company:
+                return ""
+            contact = tools.upsert_contact(
+                name=name,
+                company=company,
+                role=data.get("role") or None,
+                email=data.get("email") or None,
+                contact_type=data.get("contact_type", "customer"),
+                status="cold",
+                source="manual",
+                notes=data.get("notes") or None,
+            )
+            added_contacts.append(contact)
+        except Exception:
+            _log.warning("Outreach chat: failed to parse add_contact block")
+        return ""
+
+    clean_reply = _re.sub(
+        r"<add_contact>\s*([\s\S]*?)\s*</add_contact>",
+        _handle_add_contact,
+        raw_reply,
+    ).strip()
+
+    clean_reply = extract_and_save_context(clean_reply, "outreach")
+    return {"reply": clean_reply, "contacts_added": added_contacts}

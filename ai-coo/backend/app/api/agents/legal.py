@@ -466,13 +466,16 @@ def legal_chat(body: LegalChatRequest):
     )
     uploaded_files = uploads_resp.data or []
 
+    from app.core.context import CONTEXT_EXTRACTION_PROMPT, extract_and_save_context
+
     system_prompt = _build_legal_system_prompt(global_ctx, checklist_items, documents, uploaded_files)
+    system_prompt += CONTEXT_EXTRACTION_PROMPT
 
     messages = [{"role": m.role, "content": m.content} for m in body.history]
     messages.append({"role": "user", "content": body.message})
 
     try:
-        reply = llm.chat_conversation(
+        raw_reply = llm.chat_conversation(
             system_prompt=system_prompt,
             messages=messages,
             temperature=0.4,
@@ -481,4 +484,5 @@ def legal_chat(body: LegalChatRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
+    reply = extract_and_save_context(raw_reply, "legal")
     return {"reply": reply}

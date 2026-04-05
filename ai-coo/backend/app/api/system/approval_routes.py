@@ -21,6 +21,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from fastapi.responses import HTMLResponse
 
 from app.core.approvals import (
     get_pending_approvals,
@@ -142,6 +143,78 @@ def respond_to_approval_route(
     return updated
 
 
+@router.get(
+    "/quick",
+    response_class=HTMLResponse,
+    summary="Tap-to-approve/reject from SMS link",
+    include_in_schema=False,
+)
+def quick_respond(token: str = Query(...), action: str = Query(...)):
+    """
+    One-tap approve or reject from an SMS link.
+    Returns a styled HTML confirmation page.
+    """
+    from app.db.supabase_client import get_client
+
+    status = "approved" if action == "approve" else "rejected"
+    emoji  = "✅" if status == "approved" else "❌"
+    color  = "#22c55e" if status == "approved" else "#ef4444"
+
+    try:
+        r = get_client().table("user_settings").select("value").eq("key", f"sms_token:{token}").maybe_single().execute()
+        if not r.data:
+            return HTMLResponse(_quick_page("❓", "Link expired", "This link has already been used or has expired.", "#888"))
+
+        approval_id = r.data["value"]
+        existing = get_approval(approval_id)
+
+        if not existing:
+            return HTMLResponse(_quick_page("❓", "Not found", "This approval no longer exists.", "#888"))
+        if existing.status != "pending":
+            return HTMLResponse(_quick_page("ℹ️", f"Already {existing.status}", f"This request was already {existing.status}.", "#888"))
+
+        respond_to_approval(approval_id=approval_id, status=status)
+        get_client().table("user_settings").delete().eq("key", f"sms_token:{token}").execute()
+
+        c = existing.content or {}
+        title = c.get("title") or c.get("subject") or existing.action_type.replace("_", " ").title()
+
+        if status == "approved":
+            background_tasks_local = BackgroundTasks()
+            _dispatch_approval_callback(
+                agent_name=existing.agent,
+                action_type=existing.action_type,
+                original_content=existing.content,
+                user_edits=None,
+                approval_id=approval_id,
+            )
+
+        return HTMLResponse(_quick_page(emoji, status.capitalize(), title[:80], color))
+
+    except Exception as exc:
+        logger.exception("Quick respond error: %s", exc)
+        return HTMLResponse(_quick_page("⚠️", "Error", "Something went wrong. Open the app to respond.", "#f59e0b"))
+
+
+def _quick_page(emoji: str, heading: str, detail: str, color: str) -> str:
+    return f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI COO</title>
+<style>
+  body{{margin:0;font-family:-apple-system,sans-serif;background:#0a0a0a;color:#fff;
+    display:flex;align-items:center;justify-content:center;min-height:100vh;}}
+  .card{{text-align:center;padding:2rem;max-width:320px;}}
+  .emoji{{font-size:3rem;margin-bottom:1rem;}}
+  .heading{{font-size:1.5rem;font-weight:700;color:{color};margin-bottom:.5rem;}}
+  .detail{{font-size:.95rem;color:#888;line-height:1.5;}}
+</style></head><body>
+<div class="card">
+  <div class="emoji">{emoji}</div>
+  <div class="heading">{heading}</div>
+  <div class="detail">{detail}</div>
+</div></body></html>"""
+
+
 def _dispatch_approval_callback(
     agent_name: str,
     action_type: str,
@@ -189,7 +262,7 @@ def _dispatch_approval_callback(
             agent_name,
         )
     except Exception as exc:
-        logger.error(
+        logger.exception(
             "Approval callback failed for agent '%s' (approval %s): %s",
             agent_name, approval_id, exc,
         )

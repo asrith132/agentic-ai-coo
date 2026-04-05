@@ -41,12 +41,22 @@ class CreateTaskRequest(BaseModel):
 
 class PatchTaskRequest(BaseModel):
     title: str | None = None
-    status: str | None = None          # todo | in_progress | blocked | done
+    status: str | None = None          # pending_approval | todo | in_progress | blocked | done
     priority_score: float | None = None
     assigned_to: str | None = None
     description: str | None = None
     milestone_id: str | None = None
     due_date: str | None = None
+
+
+class ChatMessage(BaseModel):
+    role: str   # "user" or "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[ChatMessage] = []
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -76,6 +86,15 @@ def create_task(body: CreateTaskRequest):
         source_agent="user",
     )
     return task
+
+
+@router.delete("/tasks/{task_id}", status_code=204, summary="Delete a task")
+def delete_task(task_id: str):
+    """Permanently remove a task from the backlog."""
+    existing = tools.get_task(task_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Task not found")
+    tools.delete_task(task_id)
 
 
 @router.patch("/tasks/{task_id}", summary="Update a task")
@@ -126,6 +145,166 @@ def pm_status():
         return {"agent": "pm", "status": "ready", "top_tasks": top}
     except Exception:
         return {"agent": "pm", "status": "ready", "top_tasks": []}
+
+
+@router.post("/chat", summary="Conversational chat with the PM agent")
+def pm_chat(body: ChatRequest):
+    """
+    Natural-language chat with the PM agent.
+
+    The agent can:
+    - Answer questions about the current task backlog
+    - Create new tasks proactively when asked (queued as pending_approval)
+    - Explain priorities and reasoning
+    - Suggest what to work on next
+    """
+    from app.core.llm import llm
+    from app.core.context import get_global_context
+    from app.core.approvals import create_approval
+    from app.agents.pm.registry import registry_summary_for_llm
+
+    # Load current context
+    try:
+        global_ctx = get_global_context()
+        global_ctx_dict = global_ctx.model_dump() if hasattr(global_ctx, "model_dump") else {}
+    except Exception:
+        global_ctx_dict = {}
+
+    active_tasks = tools.get_tasks(limit=50)
+    tasks_text = "\n".join(
+        f'- [id:{t["id"]}] [{t["status"]}] (score {t.get("priority_score", 0):.0f}) {t["title"]}'
+        + (f' — {t["description"][:80]}' if t.get("description") else "")
+        for t in active_tasks
+    ) or "No tasks yet."
+
+    from app.core.context import CONTEXT_EXTRACTION_PROMPT
+
+    system_prompt = f"""You are the PM Agent for an AI-powered startup operating system.
+Your role: maintain the task backlog, create tasks proactively, prioritize ruthlessly, and assign each task to the right specialist agent.
+
+CURRENT TASK BACKLOG:
+{tasks_text}
+
+BUSINESS CONTEXT:
+{global_ctx_dict}
+
+{registry_summary_for_llm()}
+
+CAPABILITIES:
+- Answer questions about tasks, priorities, and roadmap
+- When the user asks you to create a task (or you proactively decide one is needed), respond with a JSON block AND a natural explanation
+- Use this exact format when creating a task (assigned_agent must be one of: finance, dev_activity, outreach, legal, marketing, pm):
+  <create_task>
+  {{"title": "...", "description": "...", "priority_score": <0-100>, "assigned_agent": "<agent_id>"}}
+  </create_task>
+- When the user asks you to remove or delete a task, use the task's id from the backlog above:
+  <delete_task>
+  {{"task_id": "<uuid>"}}
+  </delete_task>
+
+GUIDELINES:
+- Be direct and decisive — you're a senior PM, not a yes-man
+- Always assign each task to the most appropriate agent based on what it needs done
+- If the user's request implies a task is needed, create it proactively without being asked twice
+- Priority scores: 80-100 = critical/urgent, 50-79 = important, 20-49 = nice to have, 0-19 = backlog
+- Always explain your reasoning for task priority and agent assignment
+- Keep replies concise and actionable"""
+    system_prompt += CONTEXT_EXTRACTION_PROMPT
+
+    messages = [{"role": msg.role, "content": msg.content} for msg in body.history]
+    messages.append({"role": "user", "content": body.message})
+
+    try:
+        raw_reply = llm.chat_conversation(
+            system_prompt=system_prompt,
+            messages=messages,
+            temperature=0.5,
+            max_tokens=1024,
+        )
+    except Exception as exc:
+        logger.exception("PM chat LLM call failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    # Parse any task creation blocks out of the reply
+    import re as _re
+    created_tasks = []
+    def _create_task_from_match(match: "_re.Match") -> str:
+        try:
+            import json as _json
+            data = _json.loads(match.group(1).strip())
+            title = data.get("title", "").strip()
+            description = data.get("description", "").strip()
+            priority_score = float(data.get("priority_score", 50))
+            if not title:
+                return ""
+            assigned_agent = data.get("assigned_agent", "").strip() or None
+            task = tools.create_task(
+                title=title,
+                description=description or None,
+                priority_score=priority_score,
+                status="pending_approval",
+                source_agent="pm_chat",
+                assigned_agent=assigned_agent,
+            )
+            try:
+                create_approval(
+                    agent="pm",
+                    action_type="start_task",
+                    content={
+                        "task_id": str(task["id"]),
+                        "title": task["title"],
+                        "description": task.get("description") or "",
+                        "priority_score": task.get("priority_score", 50),
+                        "priority_reason": "",
+                        "source_agent": "pm_chat",
+                        "assigned_agent": task.get("assigned_agent") or "",
+                    },
+                )
+            except Exception:
+                logger.warning("PM chat: failed to create approval for task %s", task.get("id"))
+            created_tasks.append(task)
+            return ""  # strip the block from the reply
+        except Exception:
+            logger.warning("PM chat: failed to parse create_task block")
+            return ""
+
+    clean_reply = _re.sub(
+        r"<create_task>\s*([\s\S]*?)\s*</create_task>",
+        _create_task_from_match,
+        raw_reply,
+    ).strip()
+
+    # Parse any task deletion blocks
+    deleted_task_ids: list[str] = []
+    def _delete_task_from_match(match: "_re.Match") -> str:
+        try:
+            import json as _json
+            data = _json.loads(match.group(1).strip())
+            task_id = data.get("task_id", "").strip()
+            if not task_id:
+                return ""
+            existing = tools.get_task(task_id)
+            if existing:
+                tools.delete_task(task_id)
+                deleted_task_ids.append(task_id)
+        except Exception:
+            logger.warning("PM chat: failed to parse delete_task block")
+        return ""
+
+    clean_reply = _re.sub(
+        r"<delete_task>\s*([\s\S]*?)\s*</delete_task>",
+        _delete_task_from_match,
+        clean_reply,
+    ).strip()
+
+    from app.core.context import extract_and_save_context
+    clean_reply = extract_and_save_context(clean_reply, "pm")
+
+    return {
+        "reply": clean_reply,
+        "tasks_created": created_tasks,
+        "tasks_deleted": deleted_task_ids,
+    }
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

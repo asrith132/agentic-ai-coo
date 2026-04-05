@@ -30,9 +30,9 @@ from app.schemas.context import GlobalContext
 
 _WRITE_PERMISSIONS: dict[str, list[str]] = {
     # Top-level fields
-    "company_profile":                  [],         # user only
-    "target_customer":                  [],         # user only (research proposes via approval)
-    "brand_voice":                      [],         # user only (marketing proposes via approval)
+    "company_profile":                  ["__all__"],  # all agents can fill from chat
+    "target_customer":                  [],           # user only (research proposes via approval)
+    "brand_voice":                      [],           # user only (marketing proposes via approval)
     "competitive_landscape":            ["research"],
     "recent_events":                    ["__all__"],
 
@@ -42,7 +42,7 @@ _WRITE_PERMISSIONS: dict[str, list[str]] = {
     "business_state.monthly_burn":      ["finance"],
     "business_state.key_metrics":       ["pm", "finance"],
     "business_state.phase":             ["pm"],
-    "business_state.team_size":         [],         # user only
+    "business_state.team_size":         [],           # user only
     "business_state.last_updated":      ["pm", "finance", "dev_activity"],
 }
 
@@ -159,6 +159,81 @@ def update_global_context(field: str, value: Any, agent_name: str) -> GlobalCont
     updated.pop("id", None)
     updated.pop("updated_at", None)
     return GlobalContext(**updated)
+
+
+# ── Chat context extraction ───────────────────────────────────────────────────
+
+# Inject this snippet into every agent chat system prompt.
+CONTEXT_EXTRACTION_PROMPT = """
+CONTEXT MEMORY:
+If the user tells you anything about their company — name, product, what it does, tech stack,
+team size, business phase, target customers, or any other facts about the business —
+extract those facts and emit a context block BEFORE your reply in this exact format:
+
+<update_context>
+{"company_profile": {"name": "...", "product_name": "...", "product_description": "...", "key_features": [...], "tech_stack": [...]}}
+</update_context>
+
+Rules:
+- Only include fields the user actually mentioned. Omit everything else.
+- If nothing context-worthy was said, omit the block entirely.
+- The block must be valid JSON. Do not include any explanation inside it.
+- Keep your natural reply separate — write it after the block.
+"""
+
+
+def extract_and_save_context(raw_reply: str, agent_name: str) -> str:
+    """
+    Parse any <update_context> blocks from a chat reply, merge the extracted
+    fields into global_context, and return the reply with the block stripped.
+
+    Args:
+        raw_reply:  Full LLM response text (may contain <update_context> blocks)
+        agent_name: Name of the calling agent (e.g. "pm", "finance")
+
+    Returns:
+        Cleaned reply string with the context block removed.
+    """
+    import re
+    import json
+    import logging
+    logger = logging.getLogger(__name__)
+
+    pattern = re.compile(r"<update_context>\s*([\s\S]*?)\s*</update_context>")
+
+    def _apply_match(match: re.Match) -> str:
+        try:
+            data: dict = json.loads(match.group(1).strip())
+        except Exception:
+            logger.warning("extract_and_save_context: failed to parse JSON block")
+            return ""
+
+        raw = _get_raw_row()
+        if raw is None:
+            return ""
+
+        client = get_client()
+
+        # company_profile: merge into existing object
+        if "company_profile" in data:
+            new_fields: dict = data["company_profile"]
+            existing: dict = raw.get("company_profile") or {}
+            # Only overwrite non-empty incoming values
+            merged = {**existing, **{k: v for k, v in new_fields.items() if v not in (None, "", [])}}
+            try:
+                client.table("global_context").update({
+                    "company_profile": merged,
+                    "version": raw["version"] + 1,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", raw["id"]).execute()
+                logger.info("extract_and_save_context: updated company_profile via %s chat", agent_name)
+            except Exception:
+                logger.exception("extract_and_save_context: failed to save company_profile")
+
+        return ""
+
+    clean = pattern.sub(_apply_match, raw_reply).strip()
+    return clean
 
 
 def append_recent_event(event_summary: dict[str, Any]) -> None:

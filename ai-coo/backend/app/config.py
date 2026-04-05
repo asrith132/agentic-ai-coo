@@ -24,25 +24,29 @@ class Settings(BaseSettings):
     # ── GitHub ────────────────────────────────────────────────────────────────
     github_webhook_secret: str = ""
 
+    # ── LinkedIn ──────────────────────────────────────────────────────────────
+    linkedin_access_token: str = ""
+    linkedin_person_id: str = ""
+    linkedin_organization_id: str = ""
+
     # ── Gmail ─────────────────────────────────────────────────────────────────
     gmail_client_id: str = ""
     gmail_client_secret: str = ""
     gmail_refresh_token: str = ""
 
-    # ── Twilio (push notifications via SMS) ───────────────────────────────────
-    twilio_account_sid: str = ""
-    twilio_auth_token: str = ""
-    twilio_phone_from: str = ""
-    twilio_phone_to: str = ""
+    # ── Telegram (push notifications) ────────────────────────────────────────
+    telegram_bot_token: str = ""
 
     # ── App ───────────────────────────────────────────────────────────────────
     environment: str = "development"
     log_level: str = "INFO"
+    public_url: str = "http://localhost:8000"
 
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"
 
 
 @lru_cache()

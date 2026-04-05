@@ -189,3 +189,20 @@ class LLMClient:
 
 # Module-level singleton — import and use everywhere
 llm = LLMClient()
+
+
+# ── Backward-compat shim for older agent code ─────────────────────────────────
+
+async def call_llm_text(
+    system: str,
+    messages: list[dict],
+    temperature: float = 0.7,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+) -> str:
+    """Async shim wrapping LLMClient.chat_conversation for legacy agent code."""
+    return llm.chat_conversation(
+        system_prompt=system,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )

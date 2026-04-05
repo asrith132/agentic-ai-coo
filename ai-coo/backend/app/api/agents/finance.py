@@ -424,14 +424,16 @@ def finance_chat(body: ChatRequest):
     )
     uploaded_files = uploads_resp.data or []
 
-    system_prompt = _build_finance_system_prompt(global_ctx, snapshot, all_snapshots, recent_txs, uploaded_files)
+    from app.core.context import CONTEXT_EXTRACTION_PROMPT, extract_and_save_context
 
-    # 4. Build multi-turn message list
+    system_prompt = _build_finance_system_prompt(global_ctx, snapshot, all_snapshots, recent_txs, uploaded_files)
+    system_prompt += CONTEXT_EXTRACTION_PROMPT
+
     messages = [{"role": msg.role, "content": msg.content} for msg in body.history]
     messages.append({"role": "user", "content": body.message})
 
     try:
-        reply = llm.chat_conversation(
+        raw_reply = llm.chat_conversation(
             system_prompt=system_prompt,
             messages=messages,
             temperature=0.4,
@@ -440,4 +442,5 @@ def finance_chat(body: ChatRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
+    reply = extract_and_save_context(raw_reply, "finance")
     return {"reply": reply}

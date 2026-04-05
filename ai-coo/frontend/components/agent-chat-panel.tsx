@@ -17,6 +17,10 @@ import { legalApi } from '@/lib/api/legal';
 import { outreachApi } from '@/lib/api/outreach';
 import { devApi } from '@/lib/api/dev';
 import { DevAgentSidebar } from '@/components/dev-agent-sidebar';
+import { PMAgentSidebar } from '@/components/pm-agent-sidebar';
+import { MarketingAgentSidebar } from '@/components/marketing-agent-sidebar';
+import { pmApi } from '@/lib/api/pm';
+import { marketingApi } from '@/lib/api/marketing';
 
 interface AgentChatPanelProps {
   agent: Agent | null;
@@ -108,6 +112,14 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
       legal: legalApi.chat,
       'outreach-agent': outreachApi.chat,
       'dev-agent': devApi.chat,
+      'product-manager': async (msg, hist) => {
+        const res = await pmApi.chat(msg, hist)
+        return { reply: res.reply }
+      },
+      'marketing': async (msg, hist) => {
+        const res = await marketingApi.chat(msg, hist)
+        return { reply: res.reply }
+      },
     };
 
     const apiCall = REAL_API_AGENTS[agent.id];
@@ -288,6 +300,48 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
             <div ref={messagesEndRef} />
           </div>
 
+          {/* Marketing suggestion pills */}
+          {agent.id === 'marketing' && messages.length === 2 && !isThinking && (
+            <div className="px-6 pb-3 flex flex-wrap gap-1.5">
+              {[
+                'Draft a LinkedIn post about our product',
+                'What content do we have pending approval?',
+                'Write a thought leadership post',
+                'Draft a feature announcement',
+                'What trends are we tracking?',
+              ].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => { setInput(s); }}
+                  className="text-[11px] px-3 py-1 rounded-full border border-border/50 bg-secondary/30 hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* PM suggestion pills — shown only when conversation is fresh */}
+          {agent.id === 'product-manager' && messages.length === 2 && !isThinking && (
+            <div className="px-6 pb-3 flex flex-wrap gap-1.5">
+              {[
+                'What should we focus on this week?',
+                'Create a task to improve onboarding',
+                'What are our highest priority items?',
+                'Add a task to fix the payment bug',
+                'What tasks are blocked right now?',
+              ].map((s) => (
+                <button
+                  key={s}
+                  onClick={() => { setInput(s); }}
+                  className="text-[11px] px-3 py-1 rounded-full border border-border/50 bg-secondary/30 hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Input */}
           <div className="shrink-0 px-6 py-4 border-t border-border/40">
             <div
@@ -380,6 +434,10 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
             <FinanceAgentSidebar rgb={rgb} color={color} />
           ) : agent.id === 'dev-agent' ? (
             <DevAgentSidebar rgb={rgb} color={color} />
+          ) : agent.id === 'product-manager' ? (
+            <PMAgentSidebar rgb={rgb} color={color} />
+          ) : agent.id === 'marketing' ? (
+            <MarketingAgentSidebar rgb={rgb} color={color} />
           ) : (
             <div className="flex-1 overflow-y-auto p-5 space-y-5">
               <Section title="Summary">

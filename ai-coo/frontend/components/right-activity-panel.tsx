@@ -6,8 +6,10 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  ClipboardList,
   GitCommit,
   Bell,
+  Mail,
   MessageSquareText,
   RefreshCw,
   Scale,
@@ -253,6 +255,306 @@ function SkeletonRows({ n = 3 }: { n?: number }) {
 
 // ── Approval card ─────────────────────────────────────────────────────────────
 
+function ApprovalActionButtons({
+  loading,
+  onApprove,
+  onReject,
+}: {
+  loading: 'approved' | 'rejected' | null;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  return (
+    <div className="px-3 py-2.5 flex gap-2 border-t border-border/30">
+      <button
+        onClick={onApprove}
+        disabled={loading !== null}
+        className="flex-1 h-7 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-50
+          bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/25 hover:border-emerald-500/40"
+      >
+        {loading === 'approved' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+        Accept
+      </button>
+      <button
+        onClick={onReject}
+        disabled={loading !== null}
+        className="flex-1 h-7 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-50
+          bg-destructive/8 hover:bg-destructive/15 text-destructive border border-destructive/25 hover:border-destructive/40"
+      >
+        {loading === 'rejected' ? <RefreshCw className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+        Decline
+      </button>
+    </div>
+  );
+}
+
+function PMTaskApprovalCard({
+  approval,
+  onDecide,
+}: {
+  approval: Approval;
+  onDecide: (id: string, status: 'approved' | 'rejected') => void;
+}) {
+  const [loading, setLoading] = useState<'approved' | 'rejected' | null>(null);
+  const c = approval.content as Record<string, unknown>;
+  const priorityScore = typeof c.priority_score === 'number' ? c.priority_score : 50;
+  const sourceAgent = c.source_agent ? agentLabel(String(c.source_agent)) : null;
+  const description = c.description ? String(c.description) : null;
+  const reason = c.priority_reason ? String(c.priority_reason) : null;
+  const title = c.title ? String(c.title) : actionLabel(approval.action_type);
+
+  const handle = async (status: 'approved' | 'rejected') => {
+    setLoading(status);
+    await onDecide(approval.id, status);
+    setLoading(null);
+  };
+
+  // Priority colour: red ≥80, amber 50–79, green <50
+  const scoreColor =
+    priorityScore >= 80
+      ? 'text-destructive'
+      : priorityScore >= 50
+      ? 'text-warning'
+      : 'text-emerald-400';
+  const barColor =
+    priorityScore >= 80
+      ? 'bg-destructive'
+      : priorityScore >= 50
+      ? 'bg-warning'
+      : 'bg-emerald-400';
+
+  return (
+    <div className="rounded-xl border border-primary/20 bg-primary/5 overflow-hidden">
+      {/* Header */}
+      <div className="px-3 py-2.5 flex items-start gap-2.5">
+        <div className="w-6 h-6 rounded-md bg-primary/10 border border-primary/25 flex items-center justify-center shrink-0 mt-0.5">
+          <ClipboardList className="w-3 h-3 text-primary" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs font-semibold text-foreground/90">PM Agent</span>
+            <Badge
+              variant="outline"
+              className="text-[9px] py-0 h-4 bg-primary/8 border-primary/25 text-primary font-normal"
+            >
+              New Task
+            </Badge>
+          </div>
+          <p className="text-[11px] text-foreground/85 mt-0.5 leading-relaxed font-medium">
+            {title}
+          </p>
+          {approval.created_at && (
+            <span className="text-[10px] text-muted-foreground/50 mt-0.5 block">
+              {timeAgo(approval.created_at)}
+            </span>
+          )}
+        </div>
+        {/* Priority score badge */}
+        <div className="shrink-0 text-right">
+          <span className={cn('text-sm font-bold tabular-nums', scoreColor)}>
+            {Math.round(priorityScore)}
+          </span>
+          <span className="text-[9px] text-muted-foreground/50 block leading-none">priority</span>
+        </div>
+      </div>
+
+      {/* Priority bar */}
+      <div className="px-3 pb-2">
+        <div className="h-1 rounded-full bg-secondary/60 overflow-hidden">
+          <div
+            className={cn('h-full rounded-full transition-all', barColor)}
+            style={{ width: `${priorityScore}%` }}
+          />
+        </div>
+        {reason && (
+          <p className="text-[10px] text-muted-foreground/60 mt-1 leading-snug line-clamp-2">
+            {reason}
+          </p>
+        )}
+      </div>
+
+      {/* Description */}
+      {description && (
+        <div className="px-3 pb-2.5">
+          <p className="text-[11px] text-muted-foreground leading-relaxed line-clamp-3 bg-secondary/20 rounded-lg px-2.5 py-1.5">
+            {description}
+          </p>
+        </div>
+      )}
+
+      {/* Triggered by */}
+      {sourceAgent && (
+        <div className="px-3 pb-2.5 flex items-center gap-1.5">
+          <span className="text-[10px] text-muted-foreground/50">Triggered by</span>
+          <Badge
+            variant="outline"
+            className="text-[9px] py-0 h-4 bg-secondary/40 border-border/50 text-muted-foreground font-normal"
+          >
+            {sourceAgent}
+          </Badge>
+        </div>
+      )}
+
+      <ApprovalActionButtons
+        loading={loading}
+        onApprove={() => handle('approved')}
+        onReject={() => handle('rejected')}
+      />
+    </div>
+  );
+}
+
+function MarketingPostApprovalCard({
+  approval,
+  onDecide,
+}: {
+  approval: Approval;
+  onDecide: (id: string, status: 'approved' | 'rejected') => void;
+}) {
+  const [loading, setLoading] = useState<'approved' | 'rejected' | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const c = approval.content as Record<string, unknown>;
+  const draft = c.draft ? String(c.draft) : '';
+  const topic = c.topic ? String(c.topic) : '';
+  const contentType = c.content_type ? String(c.content_type).replace(/_/g, ' ') : 'post';
+  const preview = draft.slice(0, 160);
+
+  const handle = async (status: 'approved' | 'rejected') => {
+    setLoading(status);
+    await onDecide(approval.id, status);
+    setLoading(null);
+  };
+
+  return (
+    <div className="rounded-xl border border-[#0077b5]/25 bg-[#0077b5]/5 overflow-hidden">
+      <div className="px-3 py-2.5 flex items-start gap-2.5">
+        <div className="w-6 h-6 rounded-md bg-[#0077b5]/15 border border-[#0077b5]/30 flex items-center justify-center shrink-0 mt-0.5">
+          <MessageSquareText className="w-3 h-3 text-[#0077b5]" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs font-semibold text-foreground/90">Marketing Agent</span>
+            <Badge variant="outline" className="text-[9px] py-0 h-4 bg-[#0077b5]/10 border-[#0077b5]/25 text-[#0077b5] font-normal capitalize">
+              LinkedIn · {contentType}
+            </Badge>
+          </div>
+          {topic && (
+            <p className="text-[11px] font-medium text-foreground/80 mt-0.5">{topic}</p>
+          )}
+          {approval.created_at && (
+            <span className="text-[10px] text-muted-foreground/50 mt-0.5 block">{timeAgo(approval.created_at)}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Post preview */}
+      {draft && (
+        <div className="px-3 pb-2.5">
+          <div className="bg-secondary/30 rounded-lg px-2.5 py-2 border border-border/30">
+            <p className="text-[11px] text-foreground/85 leading-relaxed whitespace-pre-wrap">
+              {expanded ? draft : preview}
+              {!expanded && draft.length > 160 && '…'}
+            </p>
+            {draft.length > 160 && (
+              <button
+                onClick={() => setExpanded(e => !e)}
+                className="text-[10px] text-primary/70 hover:text-primary mt-1.5 cursor-pointer"
+              >
+                {expanded ? 'Show less' : 'Show full post'}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <ApprovalActionButtons
+        loading={loading}
+        onApprove={() => handle('approved')}
+        onReject={() => handle('rejected')}
+      />
+    </div>
+  );
+}
+
+function SendEmailApprovalCard({
+  approval,
+  onDecide,
+}: {
+  approval: Approval;
+  onDecide: (id: string, status: 'approved' | 'rejected') => void;
+}) {
+  const [loading, setLoading] = useState<'approved' | 'rejected' | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const c = approval.content as Record<string, unknown>;
+  const contactName  = c.contact_name  ? String(c.contact_name)  : 'Unknown';
+  const contactEmail = c.contact_email ? String(c.contact_email) : '';
+  const emailType    = c.email_type    ? String(c.email_type).replace(/_/g, ' ')    : 'outreach';
+  const channel      = c.channel       ? String(c.channel).replace(/_/g, ' ')       : 'email';
+  const subject      = c.subject       ? String(c.subject) : '';
+  const body         = c.body          ? String(c.body)    : '';
+  const preview      = body.slice(0, 200);
+
+  const handle = async (status: 'approved' | 'rejected') => {
+    setLoading(status);
+    await onDecide(approval.id, status);
+    setLoading(null);
+  };
+
+  return (
+    <div className="rounded-xl border border-sky-500/25 bg-sky-500/5 overflow-hidden">
+      <div className="px-3 py-2.5 flex items-start gap-2.5">
+        <div className="w-6 h-6 rounded-md bg-sky-500/15 border border-sky-500/30 flex items-center justify-center shrink-0 mt-0.5">
+          <Mail className="w-3 h-3 text-sky-400" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-xs font-semibold text-foreground/90">Outreach Agent</span>
+            <Badge variant="outline" className="text-[9px] py-0 h-4 bg-sky-500/10 border-sky-500/25 text-sky-400 font-normal capitalize">
+              {emailType} · {channel}
+            </Badge>
+          </div>
+          <p className="text-[11px] font-medium text-foreground/80 mt-0.5">
+            To: {contactName}{contactEmail ? ` <${contactEmail}>` : ''}
+          </p>
+          {approval.created_at && (
+            <span className="text-[10px] text-muted-foreground/50 mt-0.5 block">{timeAgo(approval.created_at)}</span>
+          )}
+        </div>
+      </div>
+
+      <div className="px-3 pb-2.5 space-y-1.5">
+        {subject && (
+          <p className="text-[11px] font-medium text-foreground/70">
+            Subject: {subject}
+          </p>
+        )}
+        {body && (
+          <div className="bg-secondary/30 rounded-lg px-2.5 py-2 border border-border/30">
+            <p className="text-[11px] text-foreground/80 leading-relaxed whitespace-pre-wrap">
+              {expanded ? body : preview}
+              {!expanded && body.length > 200 && '…'}
+            </p>
+            {body.length > 200 && (
+              <button
+                onClick={() => setExpanded(e => !e)}
+                className="text-[10px] text-primary/70 hover:text-primary mt-1.5 cursor-pointer"
+              >
+                {expanded ? 'Show less' : 'Show full email'}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <ApprovalActionButtons
+        loading={loading}
+        onApprove={() => handle('approved')}
+        onReject={() => handle('rejected')}
+      />
+    </div>
+  );
+}
+
 function ApprovalCard({
   approval,
   onDecide,
@@ -263,6 +565,16 @@ function ApprovalCard({
   const [loading, setLoading] = useState<'approved' | 'rejected' | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
 
+  if (approval.action_type === 'start_task') {
+    return <PMTaskApprovalCard approval={approval} onDecide={onDecide} />;
+  }
+  if (approval.action_type === 'publish_post') {
+    return <MarketingPostApprovalCard approval={approval} onDecide={onDecide} />;
+  }
+  if (approval.action_type === 'send_email') {
+    return <SendEmailApprovalCard approval={approval} onDecide={onDecide} />;
+  }
+
   const handle = async (status: 'approved' | 'rejected') => {
     setLoading(status);
     await onDecide(approval.id, status);
@@ -271,7 +583,6 @@ function ApprovalCard({
 
   const c = approval.content as Record<string, unknown>;
 
-  // Human-readable title for the card header
   const title = (() => {
     if (c.title) return String(c.title);
     if (c.subject) return String(c.subject);
@@ -279,7 +590,6 @@ function ApprovalCard({
     return actionLabel(approval.action_type);
   })();
 
-  // 500-char document snippet the legal agent intentionally provides
   const docPreview = c.preview ? String(c.preview) : null;
 
   return (
@@ -330,35 +640,11 @@ function ApprovalCard({
         </>
       )}
 
-      {/* Action row */}
-      <div className="px-3 py-2.5 flex gap-2 border-t border-border/30">
-        <button
-          onClick={() => handle('approved')}
-          disabled={loading !== null}
-          className="flex-1 h-7 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-50
-            bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/25 hover:border-emerald-500/40"
-        >
-          {loading === 'approved' ? (
-            <RefreshCw className="w-3 h-3 animate-spin" />
-          ) : (
-            <Check className="w-3 h-3" />
-          )}
-          Accept
-        </button>
-        <button
-          onClick={() => handle('rejected')}
-          disabled={loading !== null}
-          className="flex-1 h-7 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5 transition-all cursor-pointer disabled:opacity-50
-            bg-destructive/8 hover:bg-destructive/15 text-destructive border border-destructive/25 hover:border-destructive/40"
-        >
-          {loading === 'rejected' ? (
-            <RefreshCw className="w-3 h-3 animate-spin" />
-          ) : (
-            <X className="w-3 h-3" />
-          )}
-          Decline
-        </button>
-      </div>
+      <ApprovalActionButtons
+        loading={loading}
+        onApprove={() => handle('approved')}
+        onReject={() => handle('rejected')}
+      />
     </div>
   );
 }

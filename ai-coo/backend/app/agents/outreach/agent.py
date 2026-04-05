@@ -200,7 +200,10 @@ class OutreachAgent(BaseAgent):
 
         profile_results: list[dict[str, str]] = []
         for query in query_plan["profiles"]:
-            profile_results.extend(tools.search_google_profiles(query, max_results=5))
+            try:
+                profile_results.extend(tools.search_google_profiles(query, max_results=5))
+            except Exception:
+                pass  # Google blocks scraping — skip silently
 
         company_results: list[dict[str, str]] = []
         for query in query_plan["company"]:
@@ -276,6 +279,8 @@ Limit to {limit} prospects.
             temperature=0.4,
         )
         prospects = self._parse_prospects_json(raw, limit=limit)
+        if not prospects:
+            raise ValueError(f"No valid prospects found in search results for focus: {focus}")
 
         saved_contacts: list[dict[str, Any]] = []
         enriched_prospects: list[dict[str, Any]] = []
@@ -360,18 +365,28 @@ Limit to {limit} prospects.
         if contact is None:
             raise ValueError(f"Contact '{message['contact_id']}' not found")
 
-        send_result = tools.send_via_gmail(
-            to_email=contact.get("email") or content.get("contact_email"),
-            subject=content.get("subject") or message.get("subject") or "",
-            body=content.get("body") or message.get("body") or "",
-        )
-        if content.get("channel") and content.get("channel") != "email":
+        to_email = contact.get("email") or content.get("contact_email")
+        channel  = content.get("channel") or message.get("channel") or "email"
+
+        if to_email:
+            # Always try Gmail when an email address is available
+            send_result = tools.send_via_gmail(
+                to_email=to_email,
+                subject=content.get("subject") or message.get("subject") or "",
+                body=content.get("body") or message.get("body") or "",
+            )
+        elif channel not in ("email", "unknown"):
             send_result = {
                 "mode": "manual_social",
                 "status": "ready",
                 "provider_message_id": None,
-                "detail": f"{content['channel']} transport is not wired yet; message is ready for manual/API send.",
+                "detail": f"{channel} message is ready — send manually.",
             }
+        else:
+            raise ValueError(
+                f"Cannot send to {contact.get('name')}: no email address on file. "
+                "Update the contact with an email address first."
+            )
         updated = tools.update_message(
             message_id,
             {
@@ -646,8 +661,6 @@ Limit to {limit} prospects.
                     "priority_score": int(prospect.get("priority_score", 50)),
                 }
             )
-        if not cleaned:
-            raise ValueError("Prospect discovery returned no valid prospects")
         return cleaned
 
     def _looks_like_placeholder_identity(self, name: str, company: str) -> bool:

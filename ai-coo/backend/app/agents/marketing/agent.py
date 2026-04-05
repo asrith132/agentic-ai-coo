@@ -1,43 +1,31 @@
 """
-agents/marketing/agent.py — MarketingAgent.
+agents/marketing/agent.py — MarketingAgent
 
-Scans social platforms for relevant conversations, drafts content in brand voice,
+Scans LinkedIn for relevant conversations, drafts content in brand voice,
 maintains public presence.
 
-Flagship feature: Live Trend Hunter + Auto-Reply Generator
+Flagship feature: LinkedIn Trend Hunter + Content Drafter
 
 Subscribed events: feature_shipped, research_completed, reply_received
-Emitted events:    marketing.trend_found, marketing.content_published, marketing.engagement_spike
+Emitted events:    marketing.trend_found, marketing.content_published
 
 Autonomy rules:
-  - Trend scanning: Autonomous
-  - Drafting content: Autonomous
-  - Publishing: APPROVAL REQUIRED
+  - Trend scanning:   Autonomous
+  - Drafting content: Autonomous (queued as pending_approval)
+  - Publishing:       APPROVAL REQUIRED
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from app.core.base_agent import BaseAgent
-from app.core.context import get_global_context
-from app.core.events import emit_event, get_unconsumed_events, mark_consumed
-from app.core.approvals import request_approval, get_approval_status
-from app.core.notifications import notify
-from app.core.llm import call_llm_text
-from app.agents.marketing.tools import (
-    PLATFORM_CHAR_LIMITS,
-    SUPPORTED_PLATFORMS,
-    search_all_platforms,
-    store_trend,
-    get_trend,
-    store_content,
-    update_content_status,
-    get_content,
-    publish_to_platform,
-)
+from app.core.approvals import create_approval
+from app.schemas.triggers import AgentTrigger, TriggerType
+from app.agents.marketing import tools
 
 logger = logging.getLogger(__name__)
 
@@ -45,55 +33,123 @@ RELEVANCE_STORE_THRESHOLD = 60
 RELEVANCE_NOTIFY_THRESHOLD = 80
 
 
-class MarketingAgent:
-    """
-    Marketing / Content agent for the AI COO system.
-
-    NOTE: BaseAgent.__init__ raises NotImplementedError (stub). This class
-    implements its own methods and will inherit from BaseAgent once that is
-    wired up in the base-agent prompt. For now it operates standalone.
-    """
-
+class MarketingAgent(BaseAgent):
     name = "marketing"
     description = (
-        "Scans social platforms for relevant conversations, "
-        "drafts content in brand voice, maintains public presence"
+        "Scans LinkedIn for relevant conversations, drafts content in brand voice, "
+        "manages LinkedIn presence"
     )
     subscribed_events = ["feature_shipped", "research_completed", "reply_received"]
+    writable_global_fields: list[str] = []
 
-    # ── 1. Trend Scanning ────────────────────────────────────────────────────
+    # ── BaseAgent contract ────────────────────────────────────────────────────
 
-    async def scan_trends(self) -> list[dict[str, Any]]:
+    def load_domain_context(self) -> dict[str, Any]:
+        try:
+            return {
+                "recent_posts":  tools.get_content_by_status("pending_approval", limit=10)
+                                 + tools.get_content_by_status("draft", limit=5),
+                "recent_trends": tools.get_recent_trends(limit=10),
+            }
+        except Exception:
+            logger.exception("MarketingAgent failed to load domain context")
+            return {"recent_posts": [], "recent_trends": []}
+
+    def execute(self, trigger: AgentTrigger) -> dict[str, Any]:
+        results: dict[str, Any] = {"agent": self.name, "trigger": trigger.type}
+
+        # Approval callback: user approved a post for publishing
+        if (
+            trigger.type == TriggerType.USER_REQUEST
+            and trigger.parameters
+            and trigger.parameters.get("action_type") == "publish_post"
+        ):
+            content = trigger.parameters.get("content", {})
+            content_id = content.get("content_id")
+            if content_id:
+                results["publish"] = self._execute_approved_publish(content_id, content)
+            return results
+
+        # PM task dispatch: draft content for a given topic
+        if (
+            trigger.type == TriggerType.USER_REQUEST
+            and trigger.parameters
+            and trigger.parameters.get("task_id")
+        ):
+            topic = (
+                trigger.parameters.get("description")
+                or trigger.user_input
+                or "our product"
+            )
+            draft = self.draft_content(
+                content_type="thought_leadership",
+                platform="linkedin",
+                topic=topic,
+            )
+            results["draft"] = draft
+            results["summary"] = f"Drafted LinkedIn post about: {topic}"
+            return results
+
+        # Event trigger
+        if trigger.type == TriggerType.EVENT:
+            created: list[dict] = []
+            for event in (trigger.events or []):
+                try:
+                    result = self._handle_event(event)
+                    if result:
+                        created.append(result)
+                except Exception:
+                    logger.exception("MarketingAgent error handling event %s", event.event_type)
+                finally:
+                    self.mark_consumed(str(event.id))
+            results["drafts_created"] = created
+
+        # Scheduled / manual: scan LinkedIn trends
+        if trigger.type in (TriggerType.SCHEDULED, TriggerType.USER_REQUEST):
+            trends = self.scan_trends()
+            results["trends_found"] = len(trends)
+
+        return results
+
+    def update_domain_context(self, updates: dict[str, Any]) -> None:
+        pass  # writes go directly to DB per operation
+
+    # ── Trend Scanning ──────────────────────────────��─────────────────────────
+
+    def scan_trends(self) -> list[dict[str, Any]]:
         """
-        Search all platforms for posts relevant to our product and audience.
+        Search LinkedIn for posts relevant to our product and audience.
         Score each with LLM, store high-relevance hits, emit events for top ones.
         """
-        ctx = await get_global_context()
-        if ctx is None:
-            logger.error("Global context not seeded — cannot scan trends")
+        ctx = self._global_context
+        if not ctx:
+            logger.warning("MarketingAgent: no global context — skipping trend scan")
             return []
 
-        target = ctx.target_customer or {}
-        company = ctx.company_profile or {}
-        pain_points = target.get("pain_points", [])
-        channels = target.get("channels", SUPPORTED_PLATFORMS)
-        product_description = company.get("description", company.get("name", "our product"))
+        cp = ctx.company_profile
+        tc = ctx.target_customer
+        pain_points = list(tc.pain_points) if tc.pain_points else []
+        keywords = pain_points[:]
+        if cp.name:
+            keywords.append(cp.name)
+        if cp.product_name:
+            keywords.append(cp.product_name)
 
-        # Build keyword list from pain points + product name
-        keywords = list(pain_points)
-        if company.get("name"):
-            keywords.append(company["name"])
+        if not keywords:
+            logger.info("MarketingAgent: no keywords to scan — add product name/pain points to context")
+            return []
 
-        raw_results = await search_all_platforms(keywords, hours=24)
+        raw_results = tools.search_linkedin(keywords, hours=24)
         if not raw_results:
-            logger.info("Trend scan found 0 raw results")
+            logger.info("MarketingAgent: LinkedIn trend scan found 0 results")
             return []
 
+        product_description = cp.product_description or cp.product_name or "our product"
         stored_trends: list[dict[str, Any]] = []
 
         for post in raw_results:
             try:
-                scored = await self._score_relevance(post, product_description, pain_points)
+                scored = self._score_relevance(post, product_description, pain_points)
             except Exception:
                 logger.exception("Failed to score post: %s", post.get("url", "?"))
                 continue
@@ -102,13 +158,13 @@ class MarketingAgent:
             if score < RELEVANCE_STORE_THRESHOLD:
                 continue
 
-            trend_row = await store_trend({
-                "platform": post.get("platform", "unknown"),
-                "url": post.get("url"),
-                "author": post.get("author"),
-                "content": post.get("content", ""),
-                "topic": scored.get("topic", ""),
-                "relevance_score": score,
+            trend_row = tools.store_trend({
+                "platform":         post.get("platform", "linkedin"),
+                "url":              post.get("url"),
+                "author":           post.get("author"),
+                "content":          post.get("content", ""),
+                "topic":            scored.get("topic", ""),
+                "relevance_score":  score,
                 "relevance_reason": scored.get("reason", ""),
                 "suggested_action": scored.get("suggested_action"),
             })
@@ -117,330 +173,216 @@ class MarketingAgent:
             if score >= RELEVANCE_NOTIFY_THRESHOLD:
                 priority = "high" if score > 90 else "medium"
                 topic = scored.get("topic", "relevant conversation")
-
-                await emit_event(
-                    source_agent=self.name,
+                self.emit_event(
                     event_type="marketing.trend_found",
                     payload={
-                        "platform": post.get("platform"),
-                        "topic": topic,
-                        "url": post.get("url"),
-                        "relevance_score": score,
+                        "platform":         "linkedin",
+                        "topic":            topic,
+                        "url":              post.get("url"),
+                        "relevance_score":  score,
                         "suggested_action": scored.get("suggested_action"),
                     },
-                    summary=(
-                        f"Found relevant conversation on {post.get('platform')}: "
-                        f"'{topic}' (relevance: {score})"
-                    ),
+                    summary=f"LinkedIn trend found: '{topic}' (relevance: {score})",
                     priority=priority,
                 )
-
-                await notify(
-                    agent=self.name,
-                    title=f"Trending: {topic}",
+                self.send_notification(
+                    title=f"LinkedIn trend: {topic}",
                     body=(
-                        f"Relevance {score}/100 on {post.get('platform')}. "
+                        f"Relevance {score}/100. "
                         f"Suggested action: {scored.get('suggested_action', 'engage')}. "
                         f"URL: {post.get('url', 'N/A')}"
                     ),
                     priority=priority,
                 )
 
-        logger.info("Trend scan complete — stored %d trends", len(stored_trends))
+        logger.info("MarketingAgent trend scan complete — stored %d trends", len(stored_trends))
         return stored_trends
 
-    async def _score_relevance(
+    def _score_relevance(
         self,
         post: dict[str, Any],
         product_description: str,
         pain_points: list[str],
     ) -> dict[str, Any]:
-        """Ask LLM to score a post's relevance and suggest engagement type."""
-        system = (
-            "You are a marketing analyst. Evaluate social media posts for relevance "
-            "to our product and audience. Respond ONLY with valid JSON."
+        raw = self.llm_chat(
+            system_prompt=(
+                "You are a marketing analyst. Score social media posts for relevance "
+                "to our product. Respond ONLY with valid JSON."
+            ),
+            user_message=(
+                f"Our product: {product_description}.\n"
+                f"Target pain points: {', '.join(pain_points)}.\n\n"
+                f"Post: {post.get('content', '')}\n\n"
+                f'Respond as JSON: {{"relevance_score": <int 0-100>, "reason": "<str>", '
+                f'"topic": "<short topic>", "suggested_action": "<reply|quote|new_post|none>"}}'
+            ),
+            temperature=0.2,
         )
-        prompt = (
-            f"Our product is {product_description}. "
-            f"Our target customer's pain points are: {', '.join(pain_points)}.\n\n"
-            f"Score this post's relevance (0-100) and explain why:\n"
-            f"Post: {post.get('content', '')}\n\n"
-            f"Should we engage? If yes, what type of engagement "
-            f"(reply, quote, new_post referencing this)?\n\n"
-            f"Respond as JSON: "
-            f'{{"relevance_score": <int>, "reason": "<str>", '
-            f'"topic": "<short topic>", "suggested_action": "<reply|quote|new_post|none>"}}'
-        )
-        raw = await call_llm_text(
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=300,
-        )
-        return json.loads(raw)
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        return json.loads(match.group()) if match else {"relevance_score": 0}
 
-    # ── 2. Content Drafting ──────────────────────────────────────────────────
+    # ── Content Drafting ─────���─────────────────────────────────────────��──────
 
-    async def draft_content(
+    def draft_content(
         self,
         content_type: str,
-        platform: str,
+        platform: str = "linkedin",
         trend_id: str | None = None,
         topic: str | None = None,
     ) -> dict[str, Any]:
         """
-        Draft content for a given platform and content type.
-        Optionally based on a trend or a free-form topic.
-        Returns the stored draft row (with approval request created).
+        Draft a LinkedIn post and queue it for approval.
+        Returns the stored draft row with approval_id.
         """
-        ctx = await get_global_context()
-        if ctx is None:
-            raise RuntimeError("Global context not seeded")
+        ctx = self._global_context
+        cp = ctx.company_profile if ctx else None
+        bv = ctx.brand_voice if ctx else None
 
-        company = ctx.company_profile or {}
-        brand = ctx.brand_voice or {}
-        product_name = company.get("name", "our product")
-        brand_voice = brand.get("tone", "professional and approachable")
-        key_features = company.get("description", "")
-        char_limit = PLATFORM_CHAR_LIMITS.get(platform, 3000)
+        product_name   = (cp.product_name or cp.name or "our product") if cp else "our product"
+        brand_voice    = (bv.tone or "professional and approachable") if bv else "professional and approachable"
+        product_desc   = (cp.product_description or "") if cp else ""
+        char_limit     = tools.PLATFORM_CHAR_LIMITS.get(platform, 3000)
 
         trend_context = ""
         if trend_id:
-            trend = await get_trend(trend_id)
+            trend = tools.get_trend(trend_id)
             if trend:
                 trend_context = (
-                    f"Respond to this conversation: {trend.get('post_content', '')}. "
-                    f"Make it feel natural, not promotional."
+                    f"Respond to this LinkedIn post naturally (don't be promotional): "
+                    f"{trend.get('original_content', '')}"
                 )
 
-        topic_context = ""
-        if topic:
-            topic_context = f"Write about: {topic}"
-
-        system = (
-            f"You are the social media voice for {product_name}. "
-            f"Brand voice: {brand_voice}. "
-            f"Sound human. Never be overly promotional."
-        )
-        prompt = (
-            f"Platform: {platform}. Content type: {content_type}.\n"
-            f"{trend_context}\n"
-            f"{topic_context}\n"
-            f"Current product features: {key_features}.\n"
-            f"Keep it under {char_limit} characters. Sound human."
-        )
-
-        draft_text = await call_llm_text(
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
+        draft_text = self.llm_chat(
+            system_prompt=(
+                f"You are the LinkedIn voice for {product_name}. "
+                f"Brand voice: {brand_voice}. "
+                f"Sound human, never overly promotional. "
+                f"Product: {product_desc}\n\n"
+                "CRITICAL FORMATTING RULES — follow exactly:\n"
+                "- Output ONLY the post text, nothing else\n"
+                "- NO markdown: no **, no *, no ---, no backticks, no headers\n"
+                "- Use plain text and blank lines for structure\n"
+                "- Hashtags use # prefix (e.g. #golf not hashtag#golf)\n"
+                "- NO meta-commentary, word counts, suggestions, or labels\n"
+                "- The output is pasted directly into LinkedIn as-is"
+            ),
+            user_message=(
+                f"Platform: LinkedIn. Content type: {content_type}.\n"
+                f"{trend_context}\n"
+                f"{'Topic: ' + topic if topic else ''}\n"
+                f"Keep it under {char_limit} characters. Sound human and genuine."
+            ),
             temperature=0.8,
-            max_tokens=1024,
         )
 
-        # Store as draft
-        row = await store_content({
-            "platform": platform,
-            "content": draft_text,
+        row = tools.store_content({
+            "platform":     platform,
+            "content":      draft_text,   # maps to 'body' column in store_content
             "content_type": content_type,
-            "topic": topic or (trend_context[:100] if trend_context else ""),
-            "trend_id": trend_id,
         })
 
-        # Create approval request for publishing
-        approval = await request_approval(
-            agent=self.name,
-            action_type="publish_post",
-            content={
-                "content_id": row["id"],
-                "platform": platform,
-                "content_type": content_type,
-                "draft": draft_text,
-                "topic": topic,
-                "trend_id": trend_id,
-            },
+        try:
+            create_approval(
+                agent=self.name,
+                action_type="publish_post",
+                content={
+                    "content_id":   str(row["id"]),
+                    "platform":     platform,
+                    "content_type": content_type,
+                    "draft":        draft_text,
+                    "topic":        topic or "",
+                    "trend_id":     trend_id or "",
+                },
+            )
+            tools.update_content_status(row["id"], "pending_approval")
+            row["status"] = "pending_approval"
+        except Exception:
+            logger.warning("MarketingAgent: failed to create approval for post %s", row.get("id"))
+
+        self.send_notification(
+            title=f"LinkedIn draft ready for review",
+            body=f"{content_type} post about: {topic or 'product update'}",
+            priority="medium",
         )
 
-        # Link approval to content row
-        await update_content_status(
-            row["id"],
-            "pending_approval",
-            approval_id=str(approval.id),
-        )
-
-        row["approval_id"] = str(approval.id)
-        row["status"] = "pending_approval"
         return row
 
-    # ── 3. Publishing (triggered on approval) ────────────────────────────────
+    # ── Publishing ──────────���─────────────────────────────────────────────────
 
-    async def publish(self, content_id: str) -> dict[str, Any]:
-        """
-        Publish an approved content piece to its platform.
-        Called when an approval is approved.
-        """
-        content_row = await get_content(content_id)
+    def _execute_approved_publish(self, content_id: str, content: dict[str, Any]) -> dict[str, Any]:
+        """Called when user approves a post. Publishes to LinkedIn."""
+        content_row = tools.get_content(content_id)
         if not content_row:
-            raise ValueError(f"Content {content_id} not found")
+            logger.error("MarketingAgent: content %s not found for publishing", content_id)
+            return {"error": "content not found"}
 
-        platform = content_row["platform"]
-        text = content_row["content"]
+        platform = content_row.get("platform", "linkedin")
+        text = content_row.get("body", "")
 
         try:
-            result = await publish_to_platform(platform, text)
+            result = tools.post_to_linkedin(text)
         except NotImplementedError:
-            logger.warning(
-                "Publishing to %s not yet configured — marking as published (dry run)",
-                platform,
-            )
+            logger.warning("LinkedIn not configured — dry run")
             result = {"platform_post_id": "dry-run", "url": ""}
         except Exception:
-            logger.exception("Failed to publish content %s to %s", content_id, platform)
-            raise
+            logger.exception("Failed to publish content %s", content_id)
+            tools.update_content_status(content_id, "rejected")
+            return {"error": "publish failed"}
 
         published_url = result.get("url", "")
-        updated = await update_content_status(
+        tools.update_content_status(
             content_id,
             "published",
-            platform_post_id=result.get("platform_post_id", ""),
             published_url=published_url,
-            published_at="now()",
+            published_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         )
 
         topic = content_row.get("topic", "content")
-        content_type = content_row.get("content_type", "post")
-
-        await emit_event(
-            source_agent=self.name,
+        self.emit_event(
             event_type="marketing.content_published",
-            payload={
-                "platform": platform,
-                "content_type": content_type,
-                "topic": topic,
-                "url": published_url,
-            },
-            summary=f"Published {content_type} on {platform}: {topic}",
+            payload={"platform": platform, "topic": topic, "url": published_url},
+            summary=f"Published LinkedIn post: {topic}",
             priority="low",
         )
-
-        return updated
-
-    # ── 4. Event Consumption ─────────────────────────────────────────────────
-
-    async def execute(self) -> None:
-        """
-        Main event-consumption loop. Process unconsumed events this agent
-        subscribes to.
-        """
-        events = await get_unconsumed_events(
-            consumer_agent=self.name,
-            event_types=self.subscribed_events,
+        self.send_notification(
+            title="LinkedIn post published",
+            body=f"'{topic}' is now live. {published_url}",
+            priority="medium",
         )
 
-        for event in events:
-            try:
-                await self._handle_event(event)
-            except Exception:
-                logger.exception("Error handling event %s (%s)", event.id, event.event_type)
-            finally:
-                await mark_consumed(str(event.id), self.name)
+        return {"content_id": content_id, "status": "published", "url": published_url}
 
-    async def _handle_event(self, event: Any) -> None:
-        """Route an event to the appropriate handler."""
-        if event.event_type == "feature_shipped":
-            await self._on_feature_shipped(event)
-        elif event.event_type == "research_completed":
-            await self._on_research_completed(event)
-        elif event.event_type == "reply_received":
-            await self._on_reply_received(event)
-        else:
-            logger.debug("Ignoring unhandled event type: %s", event.event_type)
+    # ── Event Handlers ──────────���─────────────────────────────────────────────
 
-    async def _on_feature_shipped(self, event: Any) -> None:
-        """Auto-draft announcement posts for each active platform."""
-        payload = event.payload or {}
-        feature_name = payload.get("feature", payload.get("name", "new feature"))
+    def _handle_event(self, event: Any) -> dict[str, Any] | None:
+        handlers = {
+            "feature_shipped":    self._on_feature_shipped,
+            "research_completed": self._on_research_completed,
+        }
+        handler = handlers.get(event.event_type)
+        return handler(event, event.payload or {}) if handler else None
 
-        ctx = await get_global_context()
-        channels = (ctx.target_customer or {}).get("channels", SUPPORTED_PLATFORMS) if ctx else SUPPORTED_PLATFORMS
-
-        for platform in channels:
-            if platform not in SUPPORTED_PLATFORMS:
-                continue
-            try:
-                await self.draft_content(
-                    content_type="announcement",
-                    platform=platform,
-                    topic=f"New feature shipped: {feature_name}",
-                )
-                logger.info("Drafted announcement for %s on %s", feature_name, platform)
-            except Exception:
-                logger.exception("Failed to draft announcement on %s", platform)
-
-    async def _on_research_completed(self, event: Any) -> None:
-        """If research contains market/competitor insights, store for messaging."""
-        payload = event.payload or {}
-        finding_type = payload.get("finding_type", "")
-
-        if finding_type not in ("competitor", "trend", "market"):
-            return
-
-        insights = payload.get("insights") or payload.get("summary", "")
-        if not insights:
-            return
-
-        logger.info(
-            "Storing research insight for marketing messaging: %s",
-            str(insights)[:100],
-        )
-
-        # Store insight in a notification for the marketing operator to review
-        await notify(
-            agent=self.name,
-            title="Research insight for messaging",
-            body=f"Type: {finding_type}. {str(insights)[:500]}",
-            priority="low",
-        )
-
-    async def _on_reply_received(self, event: Any) -> None:
-        """Flag negative replies on marketing-originated contacts for review."""
-        payload = event.payload or {}
-        sentiment = payload.get("sentiment", "neutral")
-        source = payload.get("source_agent", "")
-
-        if source != self.name:
-            return
-
-        if sentiment == "negative":
-            await notify(
-                agent=self.name,
-                title="Negative reply on marketing content",
-                body=(
-                    f"Platform: {payload.get('platform', '?')}. "
-                    f"Content: {str(payload.get('reply_text', ''))[:300]}"
-                ),
-                priority="high",
+    def _on_feature_shipped(self, event: Any, p: dict) -> dict | None:
+        feature_name = p.get("feature") or p.get("name", "new feature")
+        try:
+            return self.draft_content(
+                content_type="announcement",
+                platform="linkedin",
+                topic=f"New feature shipped: {feature_name}",
             )
+        except Exception:
+            logger.exception("MarketingAgent: failed to draft announcement for %s", feature_name)
+            return None
 
-    # ── Celery-compatible run entry point ────────────────────────────────────
-
-    async def run(self, trigger: dict[str, Any] | None = None) -> dict[str, Any]:
-        """
-        Main entry point called by Celery task or API.
-
-        On scheduled/manual trigger: runs trend scan + event consumption.
-        On event trigger: processes the specific event.
-        """
-        trigger = trigger or {}
-        trigger_type = trigger.get("type", "manual")
-
-        results: dict[str, Any] = {"agent": self.name, "trigger": trigger_type}
-
-        if trigger_type in ("scheduled", "manual", "user"):
-            trends = await self.scan_trends()
-            results["trends_found"] = len(trends)
-
-        # Always consume pending events
-        await self.execute()
-        results["status"] = "completed"
-
-        return results
+    def _on_research_completed(self, event: Any, p: dict) -> None:
+        finding_type = p.get("finding_type", "")
+        if finding_type not in ("competitor", "trend", "market"):
+            return None
+        insights = p.get("insights") or p.get("summary", "")
+        if insights:
+            self.send_notification(
+                title="Research insight for LinkedIn messaging",
+                body=f"Type: {finding_type}. {str(insights)[:300]}",
+                priority="low",
+            )
+        return None

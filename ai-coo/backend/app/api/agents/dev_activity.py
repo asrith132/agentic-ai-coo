@@ -34,6 +34,7 @@ router = APIRouter(prefix="/api/dev", tags=["Dev Activity"])
 def _run_dev_agent(commit_data: dict) -> dict:
     """Instantiate DevActivityAgent and process a commit synchronously."""
     from app.agents.dev_activity.agent import DevActivityAgent
+    from app.agents.pm.agent import PMAgent
     from app.schemas.triggers import AgentTrigger, TriggerType
 
     agent   = DevActivityAgent()
@@ -42,7 +43,18 @@ def _run_dev_agent(commit_data: dict) -> dict:
         user_input="process_commit",
         parameters={"commit_data": commit_data},
     )
-    return agent.run(trigger)
+    result = agent.run(trigger)
+
+    # After dev agent emits events, immediately wake the PM agent to consume them
+    if result.get("status") == "ok":
+        try:
+            pm_agent = PMAgent()
+            pm_trigger = AgentTrigger(type=TriggerType.EVENT)
+            pm_agent.run(pm_trigger)
+        except Exception:
+            logger.exception("PM agent event processing failed after webhook commit")
+
+    return result
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -358,12 +370,16 @@ def dev_chat(body: DevChatRequest):
     )
     dev_events = events_resp.data or []
 
+    from app.core.context import CONTEXT_EXTRACTION_PROMPT, extract_and_save_context
+
     system_prompt = _build_dev_system_prompt(global_ctx, commits, features, dev_events)
+    system_prompt += CONTEXT_EXTRACTION_PROMPT
+
     messages = [{"role": m.role, "content": m.content} for m in body.history]
     messages.append({"role": "user", "content": body.message})
 
     try:
-        reply = llm.chat_conversation(
+        raw_reply = llm.chat_conversation(
             system_prompt=system_prompt,
             messages=messages,
             temperature=0.4,
@@ -372,4 +388,5 @@ def dev_chat(body: DevChatRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
+    reply = extract_and_save_context(raw_reply, "dev_activity")
     return {"reply": reply}

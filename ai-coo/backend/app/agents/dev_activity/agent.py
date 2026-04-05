@@ -299,6 +299,26 @@ class DevActivityAgent(BaseAgent):
                 priority="high",
             )
 
+        # ── Always emit commit_pushed so PM can review every commit ──────────────
+        self.emit_event(
+            event_type="commit_pushed",
+            payload={
+                "sha":           sha,
+                "message":       message[:500],
+                "author":        author,
+                "branch":        branch,
+                "commit_type":   commit_type,
+                "summary":       summary,
+                "feature_name":  feature_name,
+                "is_new_feature": is_new_feature,
+                "notify_teams":  notify_teams,
+                "notify_reason": analysis.get("notify_reason", ""),
+            },
+            summary=f"Commit by {author} on {branch}: {summary}",
+            priority="medium" if notify_teams else "low",
+        )
+        events_emitted.append("commit_pushed")
+
         # ── Stamp last_updated on business state ───────────────────────────────
         try:
             self.update_global_context(
@@ -340,7 +360,7 @@ class DevActivityAgent(BaseAgent):
 
         if existing_resp.data:
             # Update existing feature row, appending this SHA
-            existing = existing_resp.data
+            existing = existing_resp.data[0]
             related  = list(existing.get("related_commits") or [])
             if commit_sha not in related:
                 related.append(commit_sha)

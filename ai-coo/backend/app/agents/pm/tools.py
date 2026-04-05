@@ -68,15 +68,17 @@ def create_task(
     title: str,
     description: str | None = None,
     priority_score: float = 50.0,
+    status: str = "todo",
     milestone_id: str | None = None,
     due_date: str | None = None,
     source_agent: str | None = None,
     source_event_id: str | None = None,
+    assigned_agent: str | None = None,
 ) -> dict[str, Any]:
     """Insert a new task and return the stored row."""
     row: dict[str, Any] = {
         "title": title,
-        "status": "todo",
+        "status": status,
         "priority_score": priority_score,
     }
     if description:
@@ -89,9 +91,23 @@ def create_task(
         row["source_agent"] = source_agent
     if source_event_id:
         row["source_event_id"] = source_event_id
+    if assigned_agent:
+        row["assigned_agent"] = assigned_agent
 
     resp = get_client().table("pm_tasks").insert(row).execute()
     return resp.data[0]
+
+
+def delete_task(task_id: str) -> bool:
+    """Delete a task by id. Returns True if a row was deleted."""
+    resp = (
+        get_client()
+        .table("pm_tasks")
+        .delete()
+        .eq("id", task_id)
+        .execute()
+    )
+    return bool(resp.data)
 
 
 def update_task(task_id: str, **fields: Any) -> dict[str, Any]:
