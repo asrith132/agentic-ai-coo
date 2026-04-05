@@ -3,12 +3,14 @@ api/agents/outreach.py — /api/outreach/* routes
 """
 
 from __future__ import annotations
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.agents.outreach.agent import OutreachAgent
 from app.agents.outreach import tools
+from app.db.supabase_client import get_client
 
 router = APIRouter(prefix="/api/outreach", tags=["Outreach"])
 
@@ -124,3 +126,165 @@ def outreach_status():
         "contacts": len(tools.list_contacts(limit=200)),
         "messages": len(tools.list_messages(limit=200)),
     }
+
+
+# ── File upload ───────────────────────────────────────────────────────────────
+
+@router.post("/upload", summary="Upload a prospect list or outreach brief")
+async def upload_outreach_file(file: UploadFile = File(...)):
+    """Store a CSV prospect list, email brief, or research doc for chat context."""
+    content_bytes = await file.read()
+    try:
+        content = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        content = content_bytes.decode("latin-1")
+
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    file_type = ext if ext in {"csv", "txt", "md"} else "text"
+
+    try:
+        get_client().table("outreach_uploads").insert({
+            "filename": file.filename,
+            "file_type": file_type,
+            "content": content,
+        }).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"filename": file.filename, "file_type": file_type, "size": len(content)}
+
+
+# ── Chat ──────────────────────────────────────────────────────────────────────
+
+class OutreachChatMessage(BaseModel):
+    role: str
+    content: str
+
+class OutreachChatRequest(BaseModel):
+    message: str
+    history: list[OutreachChatMessage] = []
+
+
+def _build_outreach_system_prompt(
+    global_ctx: Any | None,
+    contacts: list[dict[str, Any]],
+    messages_data: list[dict[str, Any]],
+    uploaded_files: list[dict[str, Any]],
+) -> str:
+    parts: list[str] = []
+
+    # 1. Business context
+    if global_ctx:
+        cp = global_ctx.company_profile
+        tc = global_ctx.target_customer
+        bv = global_ctx.brand_voice
+        parts += [
+            "=== BUSINESS CONTEXT ===",
+            f"Company:     {cp.name or '(not set)'}",
+            f"Product:     {cp.product_name} — {cp.product_description}",
+            f"ICP persona: {tc.persona or '(not set)'}",
+            f"ICP industry: {tc.industry or '(not set)'}",
+            f"ICP pain points: {', '.join(tc.pain_points) if tc.pain_points else '(not set)'}",
+            f"Brand tone:  {bv.tone or '(not set)'}",
+            "========================",
+            "",
+        ]
+
+    company_name = global_ctx.company_profile.name if global_ctx else "this company"
+    parts += [
+        f"You are the Outreach Agent for {company_name}. "
+        "You have access to the company's contact pipeline, message history, and any uploaded files. "
+        "Help with outreach strategy, draft emails, analyze the pipeline, and suggest next actions. "
+        "Be concise and actionable.",
+        "",
+    ]
+
+    # 2. Contacts pipeline
+    if contacts:
+        by_status: dict[str, int] = {}
+        for c in contacts:
+            s = c.get("status", "unknown")
+            by_status[s] = by_status.get(s, 0) + 1
+        status_str = ", ".join(f"{s}: {n}" for s, n in sorted(by_status.items()))
+        parts += [
+            f"## Contact Pipeline ({len(contacts)} total — {status_str})",
+        ]
+        for c in contacts[:25]:
+            last = c.get("last_contacted_at", "")[:10] if c.get("last_contacted_at") else "never"
+            parts.append(
+                f"  [{c.get('status','?').upper()}] {c.get('name','')} @ {c.get('company','')} "
+                f"({c.get('contact_type','?')}) | last: {last}"
+            )
+        parts.append("")
+
+    # 3. Recent messages
+    if messages_data:
+        parts.append(f"## Recent Messages ({len(messages_data)})")
+        for m in messages_data[:15]:
+            parts.append(
+                f"  [{m.get('direction','?').upper()}] [{m.get('status','?')}] "
+                f"{(m.get('subject') or m.get('body',''))[:60]}"
+            )
+        parts.append("")
+
+    # 4. Uploaded files
+    if uploaded_files:
+        for upload in uploaded_files:
+            fname = upload.get("filename") or "uploaded file"
+            uploaded_at = upload.get("uploaded_at", "")[:10]
+            content = upload.get("content", "")
+            if len(content) > 40_000:
+                content = content[:40_000] + "\n... (truncated)"
+            parts += [
+                f"## Uploaded File: {fname} (uploaded {uploaded_at})",
+                content,
+                "",
+            ]
+
+    return "\n".join(parts)
+
+
+@router.post("/chat", summary="Conversational Q&A about outreach pipeline")
+def outreach_chat(body: OutreachChatRequest):
+    """Answer questions about contacts, pipeline, messages, and uploaded prospect lists."""
+    from app.core.llm import llm
+    from app.core.context import get_global_context
+
+    client = get_client()
+
+    try:
+        global_ctx = get_global_context()
+    except Exception:
+        global_ctx = None
+
+    contacts = tools.list_contacts(limit=100)
+    messages_data = tools.list_messages(limit=50)
+
+    uploads_resp = (
+        client.table("outreach_uploads")
+        .select("filename, file_type, content, uploaded_at")
+        .order("uploaded_at", desc=True)
+        .limit(3)
+        .execute()
+    )
+    uploaded_files = uploads_resp.data or []
+
+    system_prompt = _build_outreach_system_prompt(global_ctx, contacts, messages_data, uploaded_files)
+
+    messages = [{"role": m.role, "content": m.content} for m in body.history]
+    messages.append({"role": "user", "content": body.message})
+
+    try:
+        reply = llm.conversation(
+            system_prompt=system_prompt,
+            messages=messages,
+            temperature=0.4,
+            max_tokens=1024,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"reply": reply}

@@ -208,6 +208,29 @@ class LLMClient:
             "stop_reason": response.stop_reason,
         }
 
+    def conversation(
+        self,
+        system_prompt: str,
+        messages: List[dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+    ) -> str:
+        """
+        Multi-turn chat. `messages` is a list of {"role": "user"|"assistant", "content": str}.
+        Returns the assistant's text response as a string.
+        """
+        response = self._call(
+            model=self.model,
+            max_tokens=max_tokens,
+            system=system_prompt,
+            messages=messages,
+            temperature=temperature,
+        )
+        block = response.content[0]
+        if block.type != "text":
+            raise ValueError(f"Expected text response, got: {block.type}")
+        return block.text
+
     def summarize(self, text: str, max_length: int = 200) -> str:
         """
         Convenience method: summarize `text` in at most `max_length` words.

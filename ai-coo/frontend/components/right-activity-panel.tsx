@@ -70,11 +70,22 @@ interface OutreachEvent {
   timestamp: string | null;
 }
 
+interface DevEvent {
+  id: string;
+  source_agent: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  summary: string | null;
+  priority: string;
+  timestamp: string | null;
+}
+
 type ActivityEntry =
   | { kind: 'notification'; data: Notification; sortKey: string }
   | { kind: 'commit'; data: Commit; sortKey: string }
   | { kind: 'legal_event'; data: LegalEvent; sortKey: string }
-  | { kind: 'outreach_event'; data: OutreachEvent; sortKey: string };
+  | { kind: 'outreach_event'; data: OutreachEvent; sortKey: string }
+  | { kind: 'dev_event'; data: DevEvent; sortKey: string };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -133,6 +144,24 @@ const legalEventStyle: Record<string, { label: string; iconClass: string; badgeC
     label: 'Compliance',
     iconClass: 'text-destructive',
     badgeClass: 'text-destructive border-destructive/30 bg-destructive/8',
+  },
+};
+
+const devEventStyle: Record<string, { label: string; iconClass: string; badgeClass: string }> = {
+  feature_shipped: {
+    label: 'Feature',
+    iconClass: 'text-emerald-400',
+    badgeClass: 'text-emerald-400 border-emerald-400/30 bg-emerald-400/8',
+  },
+  bug_fixed: {
+    label: 'Bug Fix',
+    iconClass: 'text-destructive',
+    badgeClass: 'text-destructive border-destructive/30 bg-destructive/8',
+  },
+  release_created: {
+    label: 'Release',
+    iconClass: 'text-primary',
+    badgeClass: 'text-primary border-primary/30 bg-primary/8',
   },
 };
 
@@ -467,6 +496,46 @@ function ActivityEntryRow({ entry, isLast }: { entry: ActivityEntry; isLast: boo
     );
   }
 
+  // Dev event (feature_shipped, bug_fixed, release_created)
+  if (entry.kind === 'dev_event') {
+    const ev = entry.data;
+    const style = devEventStyle[ev.event_type] ?? {
+      label: 'Dev',
+      iconClass: 'text-muted-foreground',
+      badgeClass: 'text-muted-foreground border-border/60 bg-secondary/30',
+    };
+    const p = ev.payload ?? {};
+    const detail = (() => {
+      if (p.feature_name) return String(p.feature_name);
+      if (p.version) return `v${p.version}`;
+      if (p.affected_feature) return String(p.affected_feature);
+      return ev.summary ?? ev.event_type;
+    })();
+    return (
+      <div className="flex gap-3 relative">
+        {!isLast && <div className="absolute left-[11px] top-6 bottom-0 w-px bg-border/30" />}
+        <div className="shrink-0 mt-0.5 w-6 h-6 rounded-full bg-secondary/50 border border-border/50 flex items-center justify-center">
+          <GitCommit className={cn('w-3 h-3', style.iconClass)} />
+        </div>
+        <div className="flex-1 min-w-0 pb-3">
+          <div className="flex items-start gap-1.5 flex-wrap">
+            <span className="text-[11px] font-semibold text-foreground/85 leading-tight">{detail}</span>
+            <Badge variant="outline" className={cn('text-[9px] py-0 h-4 font-normal shrink-0', style.badgeClass)}>
+              {style.label}
+            </Badge>
+          </div>
+          {ev.summary && detail !== ev.summary && (
+            <p className="text-[11px] text-muted-foreground leading-relaxed mt-0.5 line-clamp-2">{ev.summary}</p>
+          )}
+          <div className="flex items-center gap-2 mt-1">
+            <span className="text-[10px] text-muted-foreground/50">Dev Activity</span>
+            {ev.timestamp && <span className="text-[10px] text-muted-foreground/40">{timeAgo(ev.timestamp)}</span>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Commit
   const c = entry.data;
   const typeInfo = commitTypeBadge[c.commit_type ?? ''];
@@ -543,11 +612,12 @@ export function RightActivityPanel({ open, onClose }: RightActivityPanelProps) {
   const fetchActivity = useCallback(async () => {
     setLoadingActivity(true);
     try {
-      const [notifRes, commitsRes, legalEventsRes, outreachEventsRes] = await Promise.all([
+      const [notifRes, commitsRes, legalEventsRes, outreachEventsRes, devEventsRes] = await Promise.all([
         fetch(`${API_BASE}/api/notifications?limit=30`),
         fetch(`${API_BASE}/api/dev/commits?limit=20`),
         fetch(`${API_BASE}/api/events?agent=legal&limit=30`),
         fetch(`${API_BASE}/api/events?agent=outreach&limit=30`),
+        fetch(`${API_BASE}/api/events?agent=dev_activity&limit=30`),
       ]);
 
       const entries: ActivityEntry[] = [];
@@ -576,6 +646,13 @@ export function RightActivityPanel({ open, onClose }: RightActivityPanelProps) {
         const outreachEvents: OutreachEvent[] = await outreachEventsRes.json();
         for (const ev of outreachEvents) {
           entries.push({ kind: 'outreach_event', data: ev, sortKey: ev.timestamp ?? '0' });
+        }
+      }
+
+      if (devEventsRes.ok) {
+        const devEvents: DevEvent[] = await devEventsRes.json();
+        for (const ev of devEvents) {
+          entries.push({ kind: 'dev_event', data: ev, sortKey: ev.timestamp ?? '0' });
         }
       }
 

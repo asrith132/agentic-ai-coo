@@ -32,6 +32,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_dev_commits_sha
 CREATE INDEX IF NOT EXISTS idx_dev_commits_branch_ts
     ON dev_commits (branch, timestamp DESC);
 
+-- commit_type added after initial schema
+ALTER TABLE dev_commits ADD COLUMN IF NOT EXISTS commit_type TEXT
+    CHECK (commit_type IN ('feature', 'bug_fix', 'release', 'chore', 'refactor', 'maintenance'));
+
 
 CREATE TABLE IF NOT EXISTS dev_features (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -134,6 +138,18 @@ CREATE TABLE IF NOT EXISTS outreach_templates (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_outreach_templates_name
     ON outreach_templates (name);
+
+
+CREATE TABLE IF NOT EXISTS outreach_uploads (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    filename    TEXT,
+    file_type   TEXT        DEFAULT 'csv',
+    content     TEXT        NOT NULL,
+    uploaded_at TIMESTAMP   DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_outreach_uploads_uploaded_at
+    ON outreach_uploads (uploaded_at DESC);
 
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -247,6 +263,31 @@ CREATE TABLE IF NOT EXISTS finance_snapshots (
 -- One snapshot per month
 CREATE UNIQUE INDEX IF NOT EXISTS idx_finance_snapshots_month
     ON finance_snapshots (month);
+
+
+CREATE TABLE IF NOT EXISTS finance_uploads (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    filename    TEXT,
+    file_type   TEXT        DEFAULT 'csv',
+    content     TEXT        NOT NULL,   -- raw file content for LLM context
+    uploaded_at TIMESTAMP   DEFAULT now()
+);
+
+-- Most recent upload first
+CREATE INDEX IF NOT EXISTS idx_finance_uploads_uploaded_at
+    ON finance_uploads (uploaded_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS legal_uploads (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    filename    TEXT,
+    file_type   TEXT        DEFAULT 'text',
+    content     TEXT        NOT NULL,
+    uploaded_at TIMESTAMP   DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_legal_uploads_uploaded_at
+    ON legal_uploads (uploaded_at DESC);
 
 
 -- ═══════════════════════════════════════════════════════════════════════════

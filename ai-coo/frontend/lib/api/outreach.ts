@@ -73,4 +73,17 @@ export const outreachApi = {
     }),
   listEvents: (limit = 20) =>
     request<OutreachEvent[]>(`/api/events?agent=outreach&limit=${limit}`),
+
+  chat: (message: string, history: { role: string; content: string }[]) =>
+    request<{ reply: string }>('/api/outreach/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message, history }),
+    }),
+
+  uploadFile: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return fetch(`${API_BASE}/api/outreach/upload`, { method: 'POST', body: form })
+      .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(new Error(d.detail))))
+  },
 }

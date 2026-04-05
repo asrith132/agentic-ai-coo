@@ -1,8 +1,8 @@
 import type { LucideProps } from 'lucide-react'
 import {
   BriefcaseBusiness,
-  CalendarClock,
   Gavel,
+  GitCommit,
   LineChart,
   Megaphone,
   Search,
@@ -18,7 +18,7 @@ const agentIcons = {
   legal: Gavel,
   finance: LineChart,
   'outreach-agent': Send,
-  'meeting-agent': CalendarClock,
+  'dev-agent': GitCommit,
 } as const
 
 export const agentColors: Record<string, string> = {
@@ -29,7 +29,7 @@ export const agentColors: Record<string, string> = {
   legal: '#5EEAD4',
   finance: '#F87171',
   'outreach-agent': '#F9A8D4',
-  'meeting-agent': '#A5B4FC',
+  'dev-agent': '#A5B4FC',
 }
 
 export function AgentIcon({

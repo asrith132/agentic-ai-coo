@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CalendarClock,
@@ -350,10 +350,30 @@ export function LegalAgentSidebar({ rgb, color }: LegalAgentSidebarProps) {
   const [generating, setGenerating] = useState(false);
   const [drafting, setDrafting]     = useState<string | null>(null);
   const [toast, setToast]           = useState<{ msg: string; ok: boolean } | null>(null);
+  const [uploading, setUploading]   = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const showToast = (msg: string, ok = true) => {
     setToast({ msg, ok });
     setTimeout(() => setToast(null), 4000);
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch(`${API_BASE}/api/legal/upload`, { method: 'POST', body: form });
+      if (!res.ok) throw new Error((await res.json()).detail ?? 'Upload failed');
+      showToast(`${file.name} uploaded — chatbot can now reference it`, true);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : 'Upload failed', false);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
   const fetchTab = useCallback(async (t: Tab) => {
@@ -552,22 +572,40 @@ export function LegalAgentSidebar({ rgb, color }: LegalAgentSidebarProps) {
             </div>
           )
         ) : (
-          documents.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground/40">
-              <FileText className="w-6 h-6" />
-              <span className="text-xs">No documents drafted yet</span>
-              <p className="text-[10px] text-center leading-relaxed mt-1">
-                Open a checklist item and click "Draft document"
-              </p>
+          <div className="space-y-4">
+            {/* Upload a file for chat context */}
+            <div
+              className="rounded-xl border border-dashed border-border/50 p-3 flex items-center gap-3 cursor-pointer hover:bg-secondary/30 transition-colors"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
+                style={{ background: `rgba(${rgb},0.10)`, border: `1px solid rgba(${rgb},0.25)` }}>
+                {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color }} /> : <Plus className="w-3.5 h-3.5" style={{ color }} />}
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-medium">Upload document for chat</p>
+                <p className="text-[10px] text-muted-foreground/60">Contract, policy, NDA, brief…</p>
+              </div>
+              <input ref={fileInputRef} type="file" accept=".txt,.md,.csv,.pdf" className="hidden" onChange={handleFileUpload} />
             </div>
-          ) : (
-            <div>
-              <SectionLabel>{documents.length} document{documents.length !== 1 ? 's' : ''}</SectionLabel>
-              {documents.map((doc) => (
-                <DocumentRow key={doc.id} doc={doc} />
-              ))}
-            </div>
-          )
+
+            {documents.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-8 gap-2 text-muted-foreground/40">
+                <FileText className="w-6 h-6" />
+                <span className="text-xs">No documents drafted yet</span>
+                <p className="text-[10px] text-center leading-relaxed mt-1">
+                  Open a checklist item and click "Draft document"
+                </p>
+              </div>
+            ) : (
+              <div>
+                <SectionLabel>{documents.length} document{documents.length !== 1 ? 's' : ''}</SectionLabel>
+                {documents.map((doc) => (
+                  <DocumentRow key={doc.id} doc={doc} />
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

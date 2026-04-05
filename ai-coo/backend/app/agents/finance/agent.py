@@ -11,10 +11,10 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from supabase import Client, create_client
-import os
+from supabase import Client
 
 from app.core.base_agent import BaseAgent
+from app.db.supabase_client import get_client as _get_supabase_singleton
 from app.schemas.triggers import AgentTrigger
 from app.agents.finance.tools import (
     FinanceDataError,
@@ -230,10 +230,4 @@ class FinanceAgent(BaseAgent):
         ]
 
     def _get_supabase(self) -> Client:
-        url = os.getenv("SUPABASE_URL")
-        key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
-
-        if not url or not key:
-            raise RuntimeError("Missing SUPABASE_URL and service role/anon key.")
-
-        return create_client(url, key)
+        return _get_supabase_singleton()
