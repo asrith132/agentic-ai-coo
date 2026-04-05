@@ -30,7 +30,7 @@ import type {
 } from '@/lib/types/outreach'
 import { cn } from '@/lib/utils'
 
-type Tab = 'contacts' | 'messages' | 'actions' | 'activity'
+type Tab = 'contacts' | 'messages' | 'actions' | 'approvals' | 'activity'
 
 function timeAgo(iso: string | null) {
   if (!iso) return ''
@@ -431,6 +431,7 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
           <TabButton active={tab === 'contacts'} onClick={() => setTab('contacts')} label="Contacts" icon={<Users className="h-3 w-3" />} />
           <TabButton active={tab === 'messages'} onClick={() => setTab('messages')} label="Messages" icon={<Mail className="h-3 w-3" />} />
           <TabButton active={tab === 'actions'} onClick={() => setTab('actions')} label="Actions" icon={<Sparkles className="h-3 w-3" />} />
+          <TabButton active={tab === 'approvals'} onClick={() => setTab('approvals')} label="Approvals" icon={<Check className="h-3 w-3" />} />
           <TabButton active={tab === 'activity'} onClick={() => setTab('activity')} label="Activity" icon={<Radar className="h-3 w-3" />} />
         </div>
 
@@ -855,6 +856,11 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
                   )}
                 </div>
 
+              </div>
+            )}
+
+            {tab === 'approvals' && (
+              <div className="space-y-5">
                 <div className="rounded-xl border border-border/40 bg-secondary/10 p-4">
                   <div className="mb-3 flex items-center justify-between gap-2">
                     <SectionLabel>Approval Queue</SectionLabel>
