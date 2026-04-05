@@ -17,7 +17,9 @@ Routes:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from typing import Any
+
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from app.db.supabase_client import get_client
@@ -313,3 +315,170 @@ def legal_status():
         "documents":       doc_counts,
         "total_documents": sum(doc_counts.values()),
     }
+
+
+# ── File upload ───────────────────────────────────────────────────────────────
+
+@router.post("/upload", summary="Upload a legal document for the chatbot to reference")
+async def upload_legal_file(file: UploadFile = File(...)):
+    """Store a legal document (contract, policy, brief) for chat context."""
+    content_bytes = await file.read()
+    try:
+        content = content_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        content = content_bytes.decode("latin-1")
+
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    file_type = ext if ext in {"pdf", "txt", "md", "docx", "csv"} else "text"
+
+    try:
+        get_client().table("legal_uploads").insert({
+            "filename": file.filename,
+            "file_type": file_type,
+            "content": content,
+        }).execute()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"filename": file.filename, "file_type": file_type, "size": len(content)}
+
+
+# ── Chat ──────────────────────────────────────────────────────────────────────
+
+class LegalChatMessage(BaseModel):
+    role: str
+    content: str
+
+class LegalChatRequest(BaseModel):
+    message: str
+    history: list[LegalChatMessage] = []
+
+
+def _build_legal_system_prompt(
+    global_ctx: Any | None,
+    checklist_items: list[dict[str, Any]],
+    documents: list[dict[str, Any]],
+    uploaded_files: list[dict[str, Any]],
+) -> str:
+    parts: list[str] = []
+
+    # 1. Business context
+    if global_ctx:
+        cp = global_ctx.company_profile
+        bs = global_ctx.business_state
+        parts += [
+            "=== BUSINESS CONTEXT ===",
+            f"Company:      {cp.name or '(not set)'}",
+            f"Entity type:  {cp.entity_type or '(not set)'}",
+            f"Jurisdiction: {cp.jurisdiction or '(not set)'}",
+            f"Product:      {cp.product_name} — {cp.product_description}",
+            f"Phase:        {bs.phase}",
+            "========================",
+            "",
+        ]
+
+    company_name = global_ctx.company_profile.name if global_ctx else "this company"
+    parts += [
+        f"You are the Legal Agent for {company_name}. "
+        "You have access to the company's compliance checklist, drafted documents, and any uploaded legal files shown below. "
+        "Answer questions accurately. Flag risks clearly. "
+        "Do not give final legal advice — recommend consulting a qualified attorney for anything binding.",
+        "",
+    ]
+
+    # 2. Compliance checklist
+    if checklist_items:
+        overdue = [i for i in checklist_items if i.get("status") == "overdue"]
+        pending = [i for i in checklist_items if i.get("status") == "pending"]
+        done = [i for i in checklist_items if i.get("status") == "done"]
+        parts += [
+            f"## Compliance Checklist ({len(checklist_items)} items)",
+            f"- Overdue: {len(overdue)}, Pending: {len(pending)}, Done: {len(done)}",
+        ]
+        for item in checklist_items[:30]:
+            due = f" | due {item['due_date']}" if item.get("due_date") else ""
+            parts.append(
+                f"  [{item.get('status','?').upper()}] [{item.get('priority','?')}] "
+                f"{item.get('item','')} ({item.get('category','')}){due}"
+            )
+        parts.append("")
+
+    # 3. Drafted documents
+    if documents:
+        parts.append(f"## Legal Documents ({len(documents)} drafted)")
+        for doc in documents:
+            parts.append(
+                f"  [{doc.get('status','?').upper()}] {doc.get('title','')} "
+                f"({doc.get('document_type','')})"
+            )
+        parts.append("")
+
+    # 4. Uploaded files
+    if uploaded_files:
+        for upload in uploaded_files:
+            fname = upload.get("filename") or "uploaded file"
+            uploaded_at = upload.get("uploaded_at", "")[:10]
+            content = upload.get("content", "")
+            if len(content) > 40_000:
+                content = content[:40_000] + "\n... (truncated)"
+            parts += [
+                f"## Uploaded File: {fname} (uploaded {uploaded_at})",
+                content,
+                "",
+            ]
+
+    return "\n".join(parts)
+
+
+@router.post("/chat", summary="Conversational Q&A about legal compliance")
+def legal_chat(body: LegalChatRequest):
+    """Answer questions about compliance status, documents, and uploaded legal files."""
+    from app.core.llm import llm
+    from app.core.context import get_global_context
+
+    client = get_client()
+
+    try:
+        global_ctx = get_global_context()
+    except Exception:
+        global_ctx = None
+
+    checklist_resp = client.table("legal_checklist").select("*").execute()
+    checklist_items = checklist_resp.data or []
+
+    docs_resp = (
+        client.table("legal_documents")
+        .select("id, document_type, title, status, created_at")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    documents = docs_resp.data or []
+
+    uploads_resp = (
+        client.table("legal_uploads")
+        .select("filename, file_type, content, uploaded_at")
+        .order("uploaded_at", desc=True)
+        .limit(3)
+        .execute()
+    )
+    uploaded_files = uploads_resp.data or []
+
+    system_prompt = _build_legal_system_prompt(global_ctx, checklist_items, documents, uploaded_files)
+
+    messages = [{"role": m.role, "content": m.content} for m in body.history]
+    messages.append({"role": "user", "content": body.message})
+
+    try:
+        reply = llm.conversation(
+            system_prompt=system_prompt,
+            messages=messages,
+            temperature=0.4,
+            max_tokens=1024,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"reply": reply}
