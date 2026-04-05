@@ -18,6 +18,7 @@ WRITE PERMISSION MAP
 """
 
 from __future__ import annotations
+import json
 from typing import Any
 from datetime import datetime, timezone
 
@@ -34,6 +35,7 @@ _WRITE_PERMISSIONS: dict[str, list[str]] = {
     "target_customer":                  [],         # user only (research proposes via approval)
     "brand_voice":                      [],         # user only (marketing proposes via approval)
     "competitive_landscape":            ["research"],
+    "pm_voice_intake":                  ["pm"],
     "recent_events":                    ["__all__"],
 
     # Nested business_state subfields
@@ -186,3 +188,56 @@ def append_recent_event(event_summary: dict[str, Any]) -> None:
         "recent_events": recent,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }).eq("id", raw["id"]).execute()
+
+
+def try_get_global_context() -> GlobalContext | None:
+    """Return the global context row, or ``None`` if the table is empty / not seeded."""
+    try:
+        return get_global_context()
+    except RuntimeError:
+        return None
+
+
+def format_global_context_for_prompt(gc: GlobalContext | None) -> str:
+    """
+    Serialize global context for injection into Claude system prompts (logged-in flows only).
+
+    Do not use for anonymous/guest requests — this can contain private workspace data.
+    """
+    if gc is None:
+        return ""
+    blob = gc.model_dump(mode="json")
+    return (
+        "\n\n## Global workspace context (live from database)\n"
+        "Treat this as authoritative shared state for the workspace. Align your reply with it; "
+        "do not contradict established facts unless the user clearly corrects them.\n\n"
+        "```json\n"
+        + json.dumps(blob, ensure_ascii=False, indent=2)
+        + "\n```\n"
+    )
+
+
+def record_pm_voice_turn(transcript: str, result: dict[str, Any]) -> None:
+    """
+    Append a summary of this PM voice exchange to ``recent_events`` (rolling cap).
+
+    No-op if global context is not seeded. Never call for guest/anonymous voice.
+    """
+    summary = str(result.get("spoken_reply") or "").strip()
+    if len(summary) > 400:
+        summary = summary[:397] + "..."
+    append_recent_event(
+        {
+            "event_type": "pm_voice_turn",
+            "source_agent": "pm",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "summary": summary or "(no spoken_reply)",
+            "payload": {
+                "transcript_preview": (transcript or "").strip()[:400],
+                "status": result.get("status"),
+                "intake_flow": result.get("intake_flow"),
+                "guest_mode": result.get("guest_mode"),
+                "pm_intake_state": result.get("pm_intake_state"),
+            },
+        }
+    )

@@ -1,5 +1,5 @@
 import AgentFaceUI from "@/components/AgentFaceUI";
 
-export default function Home() {
+export default function AgentFacePage() {
   return <AgentFaceUI />;
 }

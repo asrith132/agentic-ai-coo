@@ -5,11 +5,20 @@ All modules should import `settings` from here rather than reading os.environ
 directly. Pydantic validates types on startup so missing required vars fail fast.
 """
 
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
     # ── Supabase ──────────────────────────────────────────────────────────────
     supabase_url: str
     supabase_anon_key: str
@@ -17,6 +26,13 @@ class Settings(BaseSettings):
 
     # ── LLM ──────────────────────────────────────────────────────────────────
     anthropic_api_key: str
+
+    # ── PM voice (ElevenLabs STT/TTS; STT may be client-side for MVP) ─────────
+    elevenlabs_api_key: str = ""
+    # Optional; TTS uses built-in default voice in code — see voice.py (not Scribe/STT).
+    elevenlabs_voice_id: str = ""
+    elevenlabs_tts_model_id: str = ""
+    elevenlabs_scribe_model_id: str = "scribe_v2_realtime"
 
     # ── Redis / Celery ────────────────────────────────────────────────────────
     redis_url: str = "redis://localhost:6379/0"
@@ -38,11 +54,26 @@ class Settings(BaseSettings):
     # ── App ───────────────────────────────────────────────────────────────────
     environment: str = "development"
     log_level: str = "INFO"
+    # When true, print Claude’s raw text (and guest-mode hints) to stderr — always visible in the uvicorn terminal.
+    log_claude_raw_to_stderr: bool = True
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    @field_validator(
+        "anthropic_api_key",
+        "elevenlabs_api_key",
+        "elevenlabs_voice_id",
+        "elevenlabs_tts_model_id",
+        mode="before",
+    )
+    @classmethod
+    def strip_optional_secrets(cls, v: object) -> object:
+        if v is None:
+            return v
+        if isinstance(v, str):
+            s = v.strip()
+            if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+                s = s[1:-1].strip()
+            return s
+        return v
 
 
 @lru_cache()

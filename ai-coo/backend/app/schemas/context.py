@@ -86,6 +86,8 @@ class GlobalContext(BaseModel):
     brand_voice: BrandVoice = Field(default_factory=BrandVoice)
     competitive_landscape: CompetitiveLandscape = Field(default_factory=CompetitiveLandscape)
     recent_events: List[dict[str, Any]] = Field(default_factory=list)
+    # PM voice structured intake (brief, state, generated tasks); pm agent writes via update_global_context.
+    pm_voice_intake: dict[str, Any] = Field(default_factory=dict)
     version: int = 1
 
 
