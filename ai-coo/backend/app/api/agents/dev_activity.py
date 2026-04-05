@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response
+from pydantic import BaseModel
 
 from app.config import settings
 from app.agents.dev_activity.tools import (
@@ -247,3 +249,127 @@ def dev_activity_status():
             "summary": (last_commit.get("parsed_summary") if last_commit else None),
         } if last_commit else None,
     }
+
+
+# ── Chat ──────────────────────────────────────────────────────────────────────
+
+class DevChatMessage(BaseModel):
+    role: str
+    content: str
+
+class DevChatRequest(BaseModel):
+    message: str
+    history: list[DevChatMessage] = []
+
+
+def _build_dev_system_prompt(
+    global_ctx: Any | None,
+    commits: list[dict[str, Any]],
+    features: list[dict[str, Any]],
+    dev_events: list[dict[str, Any]],
+) -> str:
+    parts: list[str] = []
+
+    if global_ctx:
+        cp = global_ctx.company_profile
+        parts += [
+            "=== BUSINESS CONTEXT ===",
+            f"Company:  {cp.name or '(not set)'}",
+            f"Product:  {cp.product_name} — {cp.product_description}",
+            f"Stack:    {', '.join(cp.tech_stack) if cp.tech_stack else '(not set)'}",
+            "========================",
+            "",
+        ]
+
+    company_name = global_ctx.company_profile.name if global_ctx else "this company"
+    parts += [
+        f"You are the Dev Activity Agent for {company_name}. "
+        "You have access to GitHub commit history, the shipped feature map, and dev events. "
+        "Answer questions about what has shipped, what changed, technical debt, release history, and engineering velocity. "
+        "Be concise and accurate.",
+        "",
+    ]
+
+    if commits:
+        parts.append(f"## Recent Commits ({len(commits)})")
+        for c in commits:
+            ctype = f"[{c.get('commit_type','?')}] " if c.get('commit_type') else ""
+            parts.append(
+                f"- {(c.get('timestamp') or '')[:10]} | {ctype}"
+                f"{c.get('parsed_summary') or c.get('message','')[:80]} "
+                f"| {c.get('author','')} | {c.get('branch','')}"
+            )
+        parts.append("")
+
+    if features:
+        parts.append(f"## Shipped Features ({len(features)})")
+        for f in features:
+            parts.append(f"  - {f.get('feature_name','')} — {f.get('description','')[:80]}")
+        parts.append("")
+
+    if dev_events:
+        parts.append(f"## Recent Dev Events ({len(dev_events)})")
+        for ev in dev_events:
+            parts.append(f"  [{ev.get('event_type','')}] {ev.get('summary','')}")
+        parts.append("")
+
+    return "\n".join(parts)
+
+
+@router.post("/chat", summary="Conversational Q&A about dev activity")
+def dev_chat(body: DevChatRequest):
+    """Answer questions about commits, features, and dev events."""
+    from app.core.llm import llm
+    from app.core.context import get_global_context
+    from app.db.supabase_client import get_client
+
+    client = get_client()
+
+    try:
+        global_ctx = get_global_context()
+    except Exception:
+        global_ctx = None
+
+    commits_resp = (
+        client.table("dev_commits")
+        .select("sha, message, author, branch, timestamp, parsed_summary, commit_type")
+        .order("created_at", desc=True)
+        .limit(40)
+        .execute()
+    )
+    commits = commits_resp.data or []
+
+    features_resp = (
+        client.table("dev_features")
+        .select("feature_name, description, status, shipped_at")
+        .order("shipped_at", desc=True)
+        .limit(30)
+        .execute()
+    )
+    features = features_resp.data or []
+
+    events_resp = (
+        client.table("events")
+        .select("event_type, summary, payload, priority, timestamp")
+        .eq("source_agent", "dev_activity")
+        .order("timestamp", desc=True)
+        .limit(20)
+        .execute()
+    )
+    dev_events = events_resp.data or []
+
+    system_prompt = _build_dev_system_prompt(global_ctx, commits, features, dev_events)
+    messages = [{"role": m.role, "content": m.content} for m in body.history]
+    messages.append({"role": "user", "content": body.message})
+
+    try:
+        reply = llm.conversation(
+            system_prompt=system_prompt,
+            messages=messages,
+            temperature=0.4,
+            max_tokens=1024,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return {"reply": reply}

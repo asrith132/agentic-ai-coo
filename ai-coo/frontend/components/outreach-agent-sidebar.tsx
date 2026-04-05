@@ -1,12 +1,13 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
   ChevronDown,
   ChevronUp,
   Loader2,
   Mail,
+  Paperclip,
   Radar,
   RefreshCw,
   Search,
@@ -18,6 +19,7 @@ import {
 
 import { Badge } from '@/components/ui/badge'
 import { outreachApi } from '@/lib/api/outreach'
+import { API_BASE } from '@/lib/api/config'
 import type {
   DiscoverContactsResult,
   OutreachApproval,
@@ -136,6 +138,26 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
   const [latestResearch, setLatestResearch] = useState<ResearchContactResult | null>(null)
   const [latestDiscover, setLatestDiscover] = useState<DiscoverContactsResult | null>(null)
   const [showApprovedApprovals, setShowApprovedApprovals] = useState(false)
+  const [uploadingFile, setUploadingFile] = useState(false)
+  const [uploadFeedback, setUploadFeedback] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setUploadingFile(true)
+    setUploadFeedback(null)
+    try {
+      await outreachApi.uploadFile(file)
+      setUploadFeedback(`✓ ${file.name} uploaded — chatbot can now reference it`)
+    } catch (err: unknown) {
+      setUploadFeedback(err instanceof Error ? err.message : 'Upload failed')
+    } finally {
+      setUploadingFile(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      setTimeout(() => setUploadFeedback(null), 4000)
+    }
+  }
 
   const [researchForm, setResearchForm] = useState({
     name: '',
@@ -425,6 +447,24 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
           <>
             {tab === 'contacts' && (
               <div className="space-y-5">
+                {/* File upload for chat context */}
+                <div
+                  className="rounded-xl border border-dashed border-border/50 p-3 flex items-center gap-3 cursor-pointer hover:bg-secondary/30 transition-colors"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0"
+                    style={{ background: `rgba(${rgb},0.10)`, border: `1px solid rgba(${rgb},0.25)` }}>
+                    {uploadingFile ? <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color }} /> : <Paperclip className="w-3.5 h-3.5" style={{ color }} />}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium">Upload prospect list or brief</p>
+                    <p className="text-[10px] text-muted-foreground/60">CSV, TXT, or MD — chatbot will reference it</p>
+                  </div>
+                  <input ref={fileInputRef} type="file" accept=".csv,.txt,.md" className="hidden" onChange={handleFileUpload} />
+                </div>
+                {uploadFeedback && (
+                  <p className="text-[10px] text-muted-foreground px-1">{uploadFeedback}</p>
+                )}
                 <div>
                   <SectionLabel>Contact List</SectionLabel>
                   {contacts.length === 0 ? (

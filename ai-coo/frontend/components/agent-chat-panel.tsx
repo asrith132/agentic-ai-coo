@@ -7,8 +7,16 @@ import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { AgentIcon, agentColors } from '@/lib/agent-visuals';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { LegalAgentSidebar } from '@/components/legal-agent-sidebar';
 import { OutreachAgentSidebar } from '@/components/outreach-agent-sidebar';
+import { FinanceAgentSidebar } from '@/components/finance-agent-sidebar';
+import { financeApi } from '@/lib/api/finance';
+import { legalApi } from '@/lib/api/legal';
+import { outreachApi } from '@/lib/api/outreach';
+import { devApi } from '@/lib/api/dev';
+import { DevAgentSidebar } from '@/components/dev-agent-sidebar';
 
 interface AgentChatPanelProps {
   agent: Agent | null;
@@ -72,6 +80,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
+  const [isThinking, setIsThinking] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -86,31 +95,55 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const text = input.trim();
-    if (!text || !agent) return;
+    if (!text || !agent || isThinking) return;
 
     const userMsg: Message = { id: Date.now().toString(), role: 'user', content: text };
     setMessages(prev => [...prev, userMsg]);
     setInput('');
 
-    // Simulated agent reply
-    setTimeout(() => {
-      const replies = [
-        `Got it. I'll factor that into my current work on ${agent.tasks[0]?.toLowerCase() ?? 'my tasks'}.`,
-        `Noted. Based on what I know, ${agent.recommendations[0]?.toLowerCase() ?? 'I recommend we revisit this soon'}.`,
-        `That's helpful context. My main concern right now is ${agent.risks[0]?.toLowerCase() ?? 'keeping things on track'}.`,
-        `Understood. I'll update my output and flag any blockers as I go.`,
-      ];
-      const reply = replies[Math.floor(Math.random() * replies.length)];
-      setMessages(prev => [...prev, { id: Date.now().toString(), role: 'agent', content: reply }]);
-    }, 800);
+    const REAL_API_AGENTS: Record<string, (msg: string, hist: {role:string;content:string}[]) => Promise<{reply:string}>> = {
+      finance: financeApi.chat,
+      legal: legalApi.chat,
+      'outreach-agent': outreachApi.chat,
+      'dev-agent': devApi.chat,
+    };
+
+    const apiCall = REAL_API_AGENTS[agent.id];
+    if (apiCall) {
+      setIsThinking(true);
+      try {
+        const history = messages
+          .filter(m => m.id !== '1' && m.id !== '2')
+          .map(m => ({ role: m.role === 'agent' ? 'assistant' : 'user', content: m.content }));
+        const { reply } = await apiCall(text, history);
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'agent', content: reply }]);
+      } catch (err: unknown) {
+        const detail = err instanceof Error ? err.message : 'Something went wrong.';
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'agent', content: `Sorry, I ran into an error: ${detail}` }]);
+      } finally {
+        setIsThinking(false);
+      }
+    } else {
+      // Simulated reply for other agents
+      setTimeout(() => {
+        const replies = [
+          `Got it. I'll factor that into my current work on ${agent.tasks[0]?.toLowerCase() ?? 'my tasks'}.`,
+          `Noted. Based on what I know, ${agent.recommendations[0]?.toLowerCase() ?? 'I recommend we revisit this soon'}.`,
+          `That's helpful context. My main concern right now is ${agent.risks[0]?.toLowerCase() ?? 'keeping things on track'}.`,
+          `Understood. I'll update my output and flag any blockers as I go.`,
+        ];
+        const reply = replies[Math.floor(Math.random() * replies.length)];
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'agent', content: reply }]);
+      }, 800);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (!isThinking) handleSend();
     }
   };
 
@@ -199,10 +232,59 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
                       : undefined
                   }
                 >
-                  {msg.content}
+                  {msg.role === 'agent' ? (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                        strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+                        em: ({ children }) => <em className="italic">{children}</em>,
+                        h1: ({ children }) => <h1 className="text-base font-semibold mt-3 mb-1">{children}</h1>,
+                        h2: ({ children }) => <h2 className="text-sm font-semibold mt-3 mb-1">{children}</h2>,
+                        h3: ({ children }) => <h3 className="text-sm font-semibold mt-2 mb-1">{children}</h3>,
+                        ul: ({ children }) => <ul className="list-disc pl-4 mb-2 space-y-0.5">{children}</ul>,
+                        ol: ({ children }) => <ol className="list-decimal pl-4 mb-2 space-y-0.5">{children}</ol>,
+                        li: ({ children }) => <li className="text-sm">{children}</li>,
+                        code: ({ children, className }) => {
+                          const isBlock = className?.includes('language-');
+                          return isBlock
+                            ? <code className="block bg-black/20 rounded-lg px-3 py-2 text-xs font-mono my-2 whitespace-pre-wrap">{children}</code>
+                            : <code className="bg-black/20 rounded px-1 py-0.5 text-xs font-mono">{children}</code>;
+                        },
+                        blockquote: ({ children }) => <blockquote className="border-l-2 border-border/60 pl-3 text-muted-foreground/80 italic my-2">{children}</blockquote>,
+                        hr: () => <hr className="border-border/40 my-3" />,
+                        table: ({ children }) => (
+                          <div className="overflow-x-auto my-2">
+                            <table className="text-xs border-collapse w-full">{children}</table>
+                          </div>
+                        ),
+                        th: ({ children }) => <th className="border border-border/40 px-2 py-1 bg-secondary/80 font-semibold text-left">{children}</th>,
+                        td: ({ children }) => <td className="border border-border/40 px-2 py-1">{children}</td>,
+                      }}
+                    >
+                      {msg.content}
+                    </ReactMarkdown>
+                  ) : (
+                    msg.content
+                  )}
                 </div>
               </div>
             ))}
+            {isThinking && (
+              <div className="flex gap-2.5 max-w-[80%]">
+                <div
+                  className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5"
+                  style={{ background: `rgba(${rgb},0.12)`, border: `1px solid rgba(${rgb},0.25)`, color }}
+                >
+                  <AgentIcon agentId={agent.id} className="w-3.5 h-3.5" strokeWidth={2.1} />
+                </div>
+                <div className="rounded-2xl rounded-tl-sm px-4 py-3 bg-secondary/60 border border-border/40 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce" style={{ animationDelay: '0ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce" style={{ animationDelay: '150ms' }} />
+                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce" style={{ animationDelay: '300ms' }} />
+                </div>
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
 
@@ -227,10 +309,10 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
               />
               <button
                 onClick={handleSend}
-                disabled={!input.trim()}
+                disabled={!input.trim() || isThinking}
                 className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all duration-150 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                 style={{
-                  background: input.trim() ? `rgba(${rgb},0.20)` : 'transparent',
+                  background: input.trim() && !isThinking ? `rgba(${rgb},0.20)` : 'transparent',
                   border: `1px solid rgba(${rgb},0.30)`,
                   color: color,
                 }}
@@ -294,6 +376,10 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
             <LegalAgentSidebar rgb={rgb} color={color} />
           ) : agent.id === 'outreach-agent' ? (
             <OutreachAgentSidebar rgb={rgb} color={color} />
+          ) : agent.id === 'finance' ? (
+            <FinanceAgentSidebar rgb={rgb} color={color} />
+          ) : agent.id === 'dev-agent' ? (
+            <DevAgentSidebar rgb={rgb} color={color} />
           ) : (
             <div className="flex-1 overflow-y-auto p-5 space-y-5">
               <Section title="Summary">

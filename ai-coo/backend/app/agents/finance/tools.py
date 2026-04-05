@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import csv
 import io
-import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -52,7 +51,9 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from supabase import Client, create_client
+from supabase import Client
+
+from app.db.supabase_client import get_client as _get_supabase_client
 
 
 ALLOWED_CATEGORIES = {
@@ -91,16 +92,7 @@ class ParsedTransaction:
 
 
 def _get_supabase() -> Client:
-  url = os.getenv("SUPABASE_URL")
-  key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
-
-  if not url or not key:
-      raise FinanceConfigError(
-          "Missing Supabase configuration. Expected SUPABASE_URL and "
-          "SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY."
-      )
-
-  return create_client(url, key)
+  return _get_supabase_client()
 
 
 def _clean_header(value: str) -> str:

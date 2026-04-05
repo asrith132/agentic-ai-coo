@@ -197,6 +197,7 @@ class DevActivityAgent(BaseAgent):
             "timestamp":          commit_data.get("timestamp"),
             "branch":             branch,
             "parsed_summary":     summary,
+            "commit_type":        commit_type,
             "features_referenced": features_referenced,
         }
 
