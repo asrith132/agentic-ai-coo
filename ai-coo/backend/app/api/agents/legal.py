@@ -472,7 +472,7 @@ def legal_chat(body: LegalChatRequest):
     messages.append({"role": "user", "content": body.message})
 
     try:
-        reply = llm.conversation(
+        reply = llm.chat_conversation(
             system_prompt=system_prompt,
             messages=messages,
             temperature=0.4,

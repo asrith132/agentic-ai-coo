@@ -145,7 +145,7 @@ class LLMClient:
             "stop_reason": response.stop_reason,
         }
 
-    def conversation(
+    def chat_conversation(
         self,
         system_prompt: str,
         messages: List[dict[str, Any]],
@@ -156,6 +156,8 @@ class LLMClient:
         Multi-turn chat. `messages` is a list of {"role": "user"|"assistant", "content": str}.
         Returns the assistant's text response as a string.
         """
+        if not messages:
+            raise ValueError("messages must be non-empty")
         response = self._call(
             model=self.model,
             max_tokens=max_tokens,
@@ -163,10 +165,11 @@ class LLMClient:
             messages=messages,
             temperature=temperature,
         )
-        block = response.content[0]
-        if block.type != "text":
-            raise ValueError(f"Expected text response, got: {block.type}")
-        return block.text
+        text_parts = [block.text for block in response.content if block.type == "text"]
+        if not text_parts:
+            raise ValueError("Expected at least one text block from Claude")
+        return "".join(text_parts)
+
 
     def summarize(self, text: str, max_length: int = 200) -> str:
         """
