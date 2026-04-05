@@ -2,126 +2,161 @@
 api/agents/pm.py — /api/pm/* routes
 
 Routes:
-  GET   /api/pm/tasks              — Task backlog sorted by priority
-  POST  /api/pm/tasks              — Create a task manually
-  PATCH /api/pm/tasks/{id}         — Update task status or fields
-  GET   /api/pm/milestones         — Milestones and progress
-  POST  /api/pm/reprioritize       — Trigger manual AI reprioritization
-  POST  /api/pm/run                — Manually trigger the PM agent
-  GET   /api/pm/status             — Last run status
+  GET   /api/pm/tasks              — Task backlog sorted by priority_score
+  POST  /api/pm/tasks              — Create a task (LLM-scored)
+  PATCH /api/pm/tasks/{id}         — Update task fields
+  GET   /api/pm/milestones         — Milestones with progress counts
+  POST  /api/pm/reprioritize       — Trigger AI reprioritization (synchronous)
+  POST  /api/pm/run                — Enqueue a full agent run via Celery
+  GET   /api/pm/status             — Agent status + top tasks
 """
 
 from __future__ import annotations
+
+import json
+import logging
+import re
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
+
+from app.agents.pm import tools
+from app.agents.pm.agent import PMAgent
+from app.schemas.triggers import user_trigger
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/pm", tags=["Project Management"])
 
-_NOT_IMPLEMENTED = {"status": "not_implemented", "message": "Implemented in Prompt 4"}
 
+# ── Request models ────────────────────────────────────────────────────────────
 
 class CreateTaskRequest(BaseModel):
     title: str
     description: str | None = None
-    priority: str = "medium"           # low | medium | high | urgent
     milestone_id: str | None = None
-    labels: list[str] = []
+    due_date: str | None = None
 
 
 class PatchTaskRequest(BaseModel):
     title: str | None = None
     status: str | None = None          # todo | in_progress | blocked | done
-    priority: str | None = None
-    assignee: str | None = None
-    notes: str | None = None
+    priority_score: float | None = None
+    assigned_to: str | None = None
+    description: str | None = None
+    milestone_id: str | None = None
+    due_date: str | None = None
 
 
-@router.get(
-    "/tasks",
-    summary="List task backlog sorted by priority",
-)
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@router.get("/tasks", summary="Task backlog sorted by priority")
 def list_tasks(
     status: str | None = Query(default=None, description="todo|in_progress|blocked|done"),
-    milestone_id: str | None = Query(default=None),
     limit: int = Query(default=50, le=200),
 ):
-    """
-    Return the full task backlog sorted by priority (urgent → high → medium → low).
-    Blocked tasks are surfaced at the top regardless of priority.
-    """
-    # TODO (Prompt 4): query GitHub issues / pm_sprints table
-    return _NOT_IMPLEMENTED
+    """Return tasks sorted by priority_score descending."""
+    return tools.get_tasks(status=status, limit=limit)
 
 
-@router.post(
-    "/tasks",
-    summary="Create a task manually",
-    status_code=201,
-)
+@router.post("/tasks", status_code=201, summary="Create a task (LLM-scored)")
 def create_task(body: CreateTaskRequest):
     """
-    Create a task (GitHub issue or internal record) directly from the dashboard.
-    The PM agent will include it in the next reprioritization run.
+    Create a task and assign an initial priority score via a quick LLM call
+    against the current business context.
     """
-    # TODO (Prompt 4): create GitHub issue + local record
-    return _NOT_IMPLEMENTED
+    score = _score_new_task(body.title, body.description)
+    task = tools.create_task(
+        title=body.title,
+        description=body.description,
+        priority_score=score,
+        milestone_id=body.milestone_id,
+        due_date=body.due_date,
+        source_agent="user",
+    )
+    return task
 
 
-@router.patch(
-    "/tasks/{task_id}",
-    summary="Update a task",
-)
+@router.patch("/tasks/{task_id}", summary="Update a task")
 def update_task(task_id: str, body: PatchTaskRequest):
-    """
-    Update a task's status, priority, assignee, or notes.
-    Status changes emit pm.task_status_changed events for other agents to react.
-    """
-    # TODO (Prompt 4): update GitHub issue + emit event
-    return _NOT_IMPLEMENTED
+    """Update task fields. Sets completed_at automatically when status → done."""
+    existing = tools.get_task(task_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Task not found")
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields provided")
+    return tools.update_task(task_id, **fields)
 
 
-@router.get(
-    "/milestones",
-    summary="List milestones and progress",
-)
+@router.get("/milestones", summary="Milestones with task progress")
 def list_milestones():
-    """
-    Return all active milestones with: name, target date, total tasks,
-    completed tasks, and percentage progress.
-    """
-    # TODO (Prompt 4): query pm_sprints table + GitHub milestones
-    return _NOT_IMPLEMENTED
+    """Return all milestones with task_count, completed_count, and progress_pct."""
+    return tools.get_milestones()
 
 
-@router.post(
-    "/reprioritize",
-    summary="Trigger AI reprioritization",
-)
+@router.post("/reprioritize", summary="Trigger AI reprioritization (synchronous)")
 def reprioritize():
     """
-    Ask the PM agent to re-rank the task backlog using the LLM, considering
-    current business phase, active priorities, and team capacity.
-
-    Returns the new priority ordering for review. A diff is shown to the user
-    before changes are applied.
+    Runs the reprioritization engine synchronously so the caller sees the
+    updated scores and new top-3 immediately. Suitable for demo / manual use.
     """
-    from app.api.agents._task_dispatch import dispatch_agent_run
-    return dispatch_agent_run(
-        "pm",
-        {"type": "user_request", "user_input": "reprioritize", "parameters": {"task": "reprioritize"}},
-    )
+    agent = PMAgent()
+    try:
+        result = agent.run(user_trigger("reprioritize"))
+        return result
+    except Exception as exc:
+        logger.exception("Reprioritization failed")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/run", summary="Manually trigger the PM agent")
+@router.post("/run", summary="Enqueue a full PM agent run via Celery")
 def run_pm():
-    """Enqueue a manual run of the PM agent via Celery."""
+    """Enqueue a background agent run (Celery). Returns immediately with task_id."""
     from app.api.agents._task_dispatch import dispatch_agent_run
     return dispatch_agent_run("pm", {"type": "user_request", "user_input": "manual run"})
 
 
-@router.get("/status", summary="PM agent last run status")
+@router.get("/status", summary="PM agent status + top tasks")
 def pm_status():
-    """Return last run timestamp and current sprint summary."""
-    return {"agent": "pm", "status": "idle", "last_run": None}
+    """Quick status check — returns top 3 tasks by priority."""
+    try:
+        top = tools.get_tasks(limit=3)
+        return {"agent": "pm", "status": "ready", "top_tasks": top}
+    except Exception:
+        return {"agent": "pm", "status": "ready", "top_tasks": []}
+
+
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _score_new_task(title: str, description: str | None) -> float:
+    """
+    Ask the LLM to assign an initial priority score for a newly created task.
+    Falls back to 50 on any error.
+    """
+    try:
+        agent = PMAgent()
+        agent._global_context = agent.load_global_context()
+        agent._domain_context = agent.load_domain_context()
+
+        raw = agent.llm_chat(
+            system_prompt=(
+                "You are a project manager. Score the priority of this new task "
+                "0–100 based on the current business context. "
+                "Reply with ONLY valid JSON: "
+                '{"score": <int>, "reason": "<one sentence>"}'
+            ),
+            user_message=(
+                f"Task: {title}\n"
+                f"Description: {description or 'n/a'}"
+            ),
+            temperature=0.2,
+        )
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group())
+            return float(parsed.get("score", 50))
+    except Exception:
+        logger.warning("Task auto-scoring failed, defaulting to 50")
+    return 50.0
