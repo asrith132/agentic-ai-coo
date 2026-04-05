@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Eye,
   Loader2,
   Mail,
   Radar,
@@ -136,6 +137,9 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
   const [latestResearch, setLatestResearch] = useState<ResearchContactResult | null>(null)
   const [latestDiscover, setLatestDiscover] = useState<DiscoverContactsResult | null>(null)
   const [showApprovedApprovals, setShowApprovedApprovals] = useState(false)
+  const [expandedMessageId, setExpandedMessageId] = useState<string | null>(null)
+  const [expandedApprovalId, setExpandedApprovalId] = useState<string | null>(null)
+  const [approvalDrafts, setApprovalDrafts] = useState<Record<string, { subject: string; body: string; comment: string }>>({})
 
   const [researchForm, setResearchForm] = useState({
     name: '',
@@ -268,6 +272,16 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
     }
   }, [selectedContact])
 
+  const getApprovalDraft = useCallback((approval: OutreachApproval) => {
+    const current = approvalDrafts[approval.id]
+    if (current) return current
+    return {
+      subject: getString(approval.content.subject) ?? '',
+      body: getString(approval.content.body) ?? getString(approval.content.preview) ?? '',
+      comment: '',
+    }
+  }, [approvalDrafts])
+
   const handleResearch = async () => {
     setSubmitting('research')
     setFeedback('')
@@ -333,12 +347,24 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
     }
   }
 
-  const handleApproval = async (approvalId: string, decision: 'approved' | 'rejected') => {
+  const handleApproval = async (approval: OutreachApproval, decision: 'approved' | 'rejected') => {
+    const approvalId = approval.id
     setSubmitting(`approval:${approvalId}:${decision}`)
     setFeedback('')
     try {
-      await outreachApi.decideApproval(approvalId, decision)
+      const draft = getApprovalDraft(approval)
+      const edits: Record<string, unknown> = {}
+      if (draft.subject.trim()) edits.subject = draft.subject.trim()
+      if (draft.body.trim()) edits.body = draft.body.trim()
+      if (draft.comment.trim()) edits.comment = draft.comment.trim()
+
+      await outreachApi.decideApproval(approvalId, decision, Object.keys(edits).length > 0 ? edits : undefined)
       setFeedback(`Approval ${decision}.`)
+      setApprovalDrafts((current) => {
+        const next = { ...current }
+        delete next[approvalId]
+        return next
+      })
       await loadData()
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'Approval update failed')
@@ -418,7 +444,7 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
         )}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-5">
+      <div className="flex-1 overflow-y-auto p-5 pb-24">
         {loading ? (
           <div className="py-10 text-center text-sm text-muted-foreground">Loading outreach workspace…</div>
         ) : (
@@ -567,6 +593,7 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
                       const contact = contactsById.get(message.contact_id)
                       const approval = message.approval_id ? approvalsById.get(message.approval_id) : null
                       const sendKey = `send:${message.id}`
+                      const expanded = expandedMessageId === message.id
                       const canSend =
                         message.direction === 'sent' &&
                         message.status !== 'sent' &&
@@ -576,15 +603,18 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
                         <div
                           key={message.id}
                           className={cn(
-                            'rounded-xl border p-3',
+                            'overflow-hidden rounded-xl border',
                             message.direction === 'received'
                               ? 'border-primary/20 bg-primary/5'
                               : 'border-border/40 bg-secondary/10',
                           )}
                         >
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setExpandedMessageId((current) => current === message.id ? null : message.id)}
+                            className="flex w-full items-start justify-between gap-3 px-3 py-3 text-left transition-colors hover:bg-background/15 cursor-pointer"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <p className="text-sm font-semibold text-foreground/90">
                                   {contact?.name ?? 'Unknown contact'}
                                 </p>
@@ -594,42 +624,52 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
                                 <Badge variant="outline" className="h-4 py-0 text-[9px] capitalize">
                                   {message.direction}
                                 </Badge>
+                                {approval && (
+                                  <Badge variant="outline" className={cn('h-4 py-0 text-[9px]', statusBadge(approval.status))}>
+                                    Approval {approval.status}
+                                  </Badge>
+                                )}
                               </div>
                               <p className="mt-1 text-[11px] text-muted-foreground">
                                 {message.subject || '(no subject)'} · {message.channel.replace(/_/g, ' ')}
                               </p>
+                              <p className="mt-1 line-clamp-1 text-[11px] text-muted-foreground/80">
+                                {message.body}
+                              </p>
                             </div>
 
-                            <div className="flex flex-col items-end gap-1.5">
-                              {approval && (
-                                <Badge variant="outline" className={cn('h-4 py-0 text-[9px]', statusBadge(approval.status))}>
-                                  Approval {approval.status}
-                                </Badge>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-[10px] text-muted-foreground/60">
+                                {timeAgo(message.sent_at || message.created_at)}
+                              </span>
+                              {expanded ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                            </div>
+                          </button>
+
+                          {expanded && (
+                            <div className="border-t border-border/30 bg-background/10 px-3 py-3">
+                              <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-foreground/75">
+                                {message.body}
+                              </p>
+
+                              {!canSend && message.direction === 'sent' && message.status !== 'sent' && approval?.status === 'pending' && (
+                                <p className="mt-3 text-[10px] text-warning">Waiting for approval before send.</p>
                               )}
+
                               {canSend && (
-                                <button
-                                  onClick={() => handleSend(message.id)}
-                                  disabled={submitting === sendKey}
-                                  className="flex items-center gap-1 rounded-md border border-primary/25 bg-primary/8 px-2 py-1 text-[10px] text-primary transition-colors hover:bg-primary/12 cursor-pointer disabled:opacity-50"
-                                >
-                                  {submitting === sendKey ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-                                  Send
-                                </button>
+                                <div className="mt-3 flex justify-end">
+                                  <button
+                                    onClick={() => handleSend(message.id)}
+                                    disabled={submitting === sendKey}
+                                    className="flex items-center gap-1 rounded-md border border-primary/25 bg-primary/8 px-2 py-1 text-[10px] text-primary transition-colors hover:bg-primary/12 cursor-pointer disabled:opacity-50"
+                                  >
+                                    {submitting === sendKey ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+                                    Send
+                                  </button>
+                                </div>
                               )}
                             </div>
-                          </div>
-
-                          <p className="mt-2 whitespace-pre-wrap text-[11px] leading-relaxed text-foreground/75">
-                            {message.body}
-                          </p>
-
-                          {!canSend && message.direction === 'sent' && message.status !== 'sent' && approval?.status === 'pending' && (
-                            <p className="mt-2 text-[10px] text-warning">Waiting for approval before send.</p>
                           )}
-
-                          <div className="mt-2 text-[10px] text-muted-foreground/60">
-                            {timeAgo(message.sent_at || message.created_at)}
-                          </div>
                         </div>
                       )
                     })}
@@ -834,6 +874,8 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
                   ) : (
                     <div className="space-y-2">
                       {pendingApprovals.map((approval) => {
+                        const expanded = expandedApprovalId === approval.id
+                        const draft = getApprovalDraft(approval)
                         const title =
                           getString(approval.content.subject) ??
                           getString(approval.content.title) ??
@@ -846,34 +888,115 @@ export function OutreachAgentSidebar({ rgb, color }: OutreachAgentSidebarProps) 
                         const rejectKey = `approval:${approval.id}:rejected`
 
                         return (
-                          <div key={approval.id} className="rounded-lg border border-border/40 bg-background/20 p-3">
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <p className="text-[11px] font-semibold text-foreground/85">{title}</p>
-                                <p className="mt-1 line-clamp-3 text-[10px] leading-relaxed text-muted-foreground">{preview}</p>
+                          <div key={approval.id} className="overflow-hidden rounded-lg border border-border/40 bg-background/20">
+                            <button
+                              onClick={() => setExpandedApprovalId((current) => current === approval.id ? null : approval.id)}
+                              className="flex w-full items-start justify-between gap-2 px-3 py-3 text-left hover:bg-background/10 cursor-pointer"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <p className="text-[11px] font-semibold text-foreground/85">{title}</p>
+                                  <Badge variant="outline" className={cn('h-4 py-0 text-[9px]', statusBadge(approval.status))}>
+                                    {approval.status}
+                                  </Badge>
+                                </div>
+                                <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-muted-foreground">{preview}</p>
                               </div>
-                              <Badge variant="outline" className={cn('h-4 py-0 text-[9px]', statusBadge(approval.status))}>
-                                {approval.status}
-                              </Badge>
-                            </div>
-                            <div className="mt-3 flex gap-2">
-                              <button
-                                onClick={() => handleApproval(approval.id, 'approved')}
-                                disabled={submitting === approveKey || submitting === rejectKey}
-                                className="flex h-7 items-center gap-1 rounded-md border border-emerald-400/25 bg-emerald-400/10 px-2 text-[10px] text-emerald-400 transition-colors hover:bg-emerald-400/15 cursor-pointer disabled:opacity-50"
-                              >
-                                {submitting === approveKey ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-                                Approve
-                              </button>
-                              <button
-                                onClick={() => handleApproval(approval.id, 'rejected')}
-                                disabled={submitting === approveKey || submitting === rejectKey}
-                                className="flex h-7 items-center gap-1 rounded-md border border-destructive/25 bg-destructive/10 px-2 text-[10px] text-destructive transition-colors hover:bg-destructive/15 cursor-pointer disabled:opacity-50"
-                              >
-                                {submitting === rejectKey ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
-                                Reject
-                              </button>
-                            </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Eye className="h-3.5 w-3.5 text-muted-foreground/70" />
+                                {expanded ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                              </div>
+                            </button>
+
+                            {expanded && (
+                              <div className="space-y-3 border-t border-border/30 bg-background/10 px-3 py-3">
+                                <div className="space-y-1.5">
+                                  <label className="text-[10px] uppercase tracking-widest text-muted-foreground/70">Subject</label>
+                                  <input
+                                    value={draft.subject}
+                                    onChange={(event) =>
+                                      setApprovalDrafts((current) => ({
+                                        ...current,
+                                        [approval.id]: { ...draft, subject: event.target.value },
+                                      }))
+                                    }
+                                    className="h-9 w-full rounded-lg border border-border/50 bg-background/50 px-3 text-sm outline-none"
+                                    placeholder="Subject"
+                                  />
+                                </div>
+
+                                <div className="space-y-1.5">
+                                  <label className="text-[10px] uppercase tracking-widest text-muted-foreground/70">Message Body</label>
+                                  <textarea
+                                    value={draft.body}
+                                    onChange={(event) =>
+                                      setApprovalDrafts((current) => ({
+                                        ...current,
+                                        [approval.id]: { ...draft, body: event.target.value },
+                                      }))
+                                    }
+                                    className="min-h-[160px] w-full rounded-lg border border-border/50 bg-background/50 px-3 py-2 text-sm outline-none resize-y"
+                                    placeholder="Draft body"
+                                  />
+                                </div>
+
+                                <div className="space-y-1.5">
+                                  <label className="text-[10px] uppercase tracking-widest text-muted-foreground/70">Review Comment</label>
+                                  <textarea
+                                    value={draft.comment}
+                                    onChange={(event) =>
+                                      setApprovalDrafts((current) => ({
+                                        ...current,
+                                        [approval.id]: { ...draft, comment: event.target.value },
+                                      }))
+                                    }
+                                    className="min-h-[72px] w-full rounded-lg border border-border/50 bg-background/50 px-3 py-2 text-sm outline-none resize-none"
+                                    placeholder="Leave context for the approval decision or requested changes"
+                                  />
+                                </div>
+
+                                <div className="rounded-lg border border-border/40 bg-secondary/20 p-3">
+                                  <p className="text-[10px] uppercase tracking-widest text-muted-foreground/70">Full Item Preview</p>
+                                  <pre className="mt-2 whitespace-pre-wrap break-words text-[10px] leading-relaxed text-muted-foreground">
+                                    {JSON.stringify(approval.content, null, 2)}
+                                  </pre>
+                                </div>
+
+                                <div className="flex flex-wrap gap-2">
+                                  <button
+                                    onClick={() => handleApproval(approval, 'approved')}
+                                    disabled={submitting === approveKey || submitting === rejectKey}
+                                    className="flex h-8 items-center gap-1 rounded-md border border-emerald-400/25 bg-emerald-400/10 px-3 text-[10px] text-emerald-400 transition-colors hover:bg-emerald-400/15 cursor-pointer disabled:opacity-50"
+                                  >
+                                    {submitting === approveKey ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
+                                    Approve with edits
+                                  </button>
+                                  <button
+                                    onClick={() => handleApproval(approval, 'rejected')}
+                                    disabled={submitting === approveKey || submitting === rejectKey}
+                                    className="flex h-8 items-center gap-1 rounded-md border border-destructive/25 bg-destructive/10 px-3 text-[10px] text-destructive transition-colors hover:bg-destructive/15 cursor-pointer disabled:opacity-50"
+                                  >
+                                    {submitting === rejectKey ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
+                                    Request changes
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      setApprovalDrafts((current) => ({
+                                        ...current,
+                                        [approval.id]: {
+                                          subject: getString(approval.content.subject) ?? '',
+                                          body: getString(approval.content.body) ?? getString(approval.content.preview) ?? '',
+                                          comment: '',
+                                        },
+                                      }))
+                                    }
+                                    className="flex h-8 items-center gap-1 rounded-md border border-border/50 bg-secondary/30 px-3 text-[10px] text-muted-foreground transition-colors hover:bg-secondary/50 cursor-pointer"
+                                  >
+                                    Reset edits
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )
                       })}

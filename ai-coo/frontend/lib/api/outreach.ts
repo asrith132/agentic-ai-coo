@@ -66,10 +66,14 @@ export const outreachApi = {
     }),
   listApprovals: (status = 'pending') =>
     request<OutreachApproval[]>(`/api/approvals?status=${encodeURIComponent(status)}&agent=outreach`),
-  decideApproval: (approvalId: string, status: 'approved' | 'rejected') =>
+  decideApproval: (
+    approvalId: string,
+    status: 'approved' | 'rejected',
+    edits?: Record<string, unknown>,
+  ) =>
     request<OutreachApproval>(`/api/approvals/${approvalId}/respond`, {
       method: 'POST',
-      body: JSON.stringify({ status }),
+      body: JSON.stringify({ status, edits }),
     }),
   listEvents: (limit = 20) =>
     request<OutreachEvent[]>(`/api/events?agent=outreach&limit=${limit}`),

@@ -119,6 +119,14 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
   const color = agentColors[agent.id] ?? '#94A3B8';
   const rgb = hexToRgb(color);
   const status = statusConfig[agent.status];
+  const detailWidth =
+    agent.id === 'outreach-agent' ? 'min(520px, 42vw)' :
+    agent.id === 'legal' ? 'min(460px, 38vw)' :
+    '380px';
+  const chatWidth =
+    agent.id === 'outreach-agent' ? 'calc(100% - min(520px, 42vw))' :
+    agent.id === 'legal' ? 'calc(100% - min(460px, 38vw))' :
+    'auto';
 
   return (
     <div
@@ -129,7 +137,7 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
       style={{ background: 'var(--background)' }}
     >
         {/* ── LEFT: Chat ── */}
-        <div className="flex-1 flex flex-col min-w-0 border-r border-border/40">
+        <div className="flex flex-col min-w-0 border-r border-border/40" style={{ width: chatWidth, flex: chatWidth === 'auto' ? 1 : undefined }}>
 
           {/* Left header — back arrow + agent info */}
           <div className="shrink-0 flex items-center gap-3 px-4 h-13 border-b border-border/40">
@@ -247,8 +255,8 @@ export function AgentChatPanel({ agent, open, onClose }: AgentChatPanelProps) {
 
       {/* ── RIGHT: Detail ── */}
       <div
-        className="w-[380px] shrink-0 flex flex-col overflow-hidden"
-        style={{ background: 'var(--card-glass-bg)' }}
+        className="shrink-0 flex flex-col overflow-hidden"
+        style={{ background: 'var(--card-glass-bg)', width: detailWidth }}
       >
           {/* Detail header */}
           <div
