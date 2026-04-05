@@ -13,6 +13,7 @@ IntakeStateLiteral = Literal[
     "intake_in_progress",
     "awaiting_fields",
     "intake_complete",
+    "ready_to_plan",
     "tasks_generated",
 ]
 
@@ -43,6 +44,31 @@ PROJECT_BRIEF_FIELD_KEYS: tuple[str, ...] = (
     "desired_milestones",
 )
 
+
+def merge_brief(
+    existing: dict[str, str],
+    updates: dict[str, Any] | None,
+    corrections: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Merge string brief fields; non-empty updates and corrections win."""
+    base = {k: (existing.get(k) or "").strip() for k in PROJECT_BRIEF_FIELD_KEYS}
+    for k in PROJECT_BRIEF_FIELD_KEYS:
+        if k not in base:
+            base[k] = ""
+    upd = updates or {}
+    cor = corrections or {}
+    for src in (upd, cor):
+        for key, val in src.items():
+            if key not in PROJECT_BRIEF_FIELD_KEYS:
+                continue
+            if val is None:
+                continue
+            s = str(val).strip()
+            if s:
+                base[key] = s
+    return base
+
+
 class GeneratedIntakeTask(BaseModel):
     """One PM-style task emitted after intake is complete enough."""
 
@@ -69,9 +95,14 @@ class PmVoiceIntakeSession(BaseModel):
     generated_tasks: list[dict[str, Any]] = Field(default_factory=list)
     tasks_runs: list[dict[str, Any]] = Field(
         default_factory=list,
-        description="Append-only history of {at, task_count} for debugging",
+        description="Append-only history of task-generation runs",
+    )
+    important_decisions: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Structured decisions extracted from PM conversations",
     )
     updated_at: str = ""
+    last_updated_at: str = ""
 
     def brief_nonempty_keys(self) -> set[str]:
         return {k for k, v in self.brief.items() if str(v or "").strip()}

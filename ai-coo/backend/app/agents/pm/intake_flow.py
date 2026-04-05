@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import uuid
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -20,10 +19,16 @@ from app.agents.pm.voice import (
     _parse_claude_json,
     maybe_generate_tts,
 )
+from app.agents.pm.pm_memory import (
+    build_pm_memory_context_block,
+    ensure_global_context_row_exists,
+    load_pm_intake_session,
+    persist_generated_tasks,
+    save_pm_intake_session,
+)
 from app.core.context import (
     format_global_context_for_prompt,
     get_global_context,
-    update_global_context,
 )
 from app.core.llm import llm
 from app.schemas.pm import PmVoiceTranscriptResult
@@ -32,6 +37,7 @@ from app.schemas.pm_intake import (
     PROJECT_BRIEF_FIELD_KEYS,
     PmVoiceIntakeSession,
     empty_brief,
+    merge_brief,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,6 +98,8 @@ INTAKE_SYSTEM_PROMPT = """You are an expert product manager assistant for an AI 
 
 {global_context_block}
 
+{pm_memory_block}
+
 ## Current session
 - session_state: {session_state}
 - CURRENT_BRIEF (JSON): {current_brief}
@@ -132,29 +140,6 @@ Brief JSON:
 
 def _filled(v: Any) -> bool:
     return bool(v is not None and str(v).strip())
-
-
-def merge_brief(
-    existing: dict[str, str],
-    updates: dict[str, Any] | None,
-    corrections: dict[str, Any] | None,
-) -> dict[str, str]:
-    base = {k: (existing.get(k) or "").strip() for k in PROJECT_BRIEF_FIELD_KEYS}
-    for k in PROJECT_BRIEF_FIELD_KEYS:
-        if k not in base:
-            base[k] = ""
-    upd = updates or {}
-    cor = corrections or {}
-    for src in (upd, cor):
-        for key, val in src.items():
-            if key not in PROJECT_BRIEF_FIELD_KEYS:
-                continue
-            if val is None:
-                continue
-            s = str(val).strip()
-            if s:
-                base[key] = s
-    return base
 
 
 def blocking_missing_for_brief(brief: dict[str, str]) -> list[str]:
@@ -303,8 +288,9 @@ def brief_from_legacy_pm_voice(result: PmVoiceTranscriptResult) -> dict[str, str
 def attach_tasks_to_legacy_voice_result(result: PmVoiceTranscriptResult) -> dict[str, Any]:
     """
     When classic ``process_pm_voice_transcript`` returns ``ready_to_plan``, generate the same
-    style of initial task list as structured intake (no global_context required). Does not
-    persist to ``pm_tasks`` — that remains a separate API.
+    style of initial task list as structured intake. Caller should invoke
+    ``persist_legacy_voice_output_to_pm_intake`` so ``global_context.pm_voice_intake`` is updated
+    when a DB row exists. Does not persist to ``pm_tasks`` — that remains a separate API.
     """
     from app.core.context import format_global_context_for_prompt, try_get_global_context
 
@@ -324,6 +310,29 @@ def attach_tasks_to_legacy_voice_result(result: PmVoiceTranscriptResult) -> dict
         "spoken_reply": spoken,
         "legacy_voice_with_tasks": True,
     }
+
+
+def persist_legacy_voice_output_to_pm_intake(
+    validated: PmVoiceTranscriptResult,
+    generated_tasks: list[dict[str, Any]],
+) -> None:
+    """
+    When legacy PM voice produces ``generated_tasks``, merge into ``pm_voice_intake``
+    via shared PM memory helpers (brief + tasks + tasks_runs).
+    """
+    if not generated_tasks:
+        return
+    res = persist_generated_tasks(
+        new_tasks=generated_tasks,
+        source="legacy_pm_voice",
+        brief_merge_updates=brief_from_legacy_pm_voice(validated),
+        replace_all_tasks=False,
+    )
+    if not res.get("ok"):
+        logger.warning(
+            "pm memory persistence failed (legacy_pm_voice): %s",
+            res.get("error"),
+        )
 
 
 def _format_tasks_for_ui(tasks: list[dict[str, Any]]) -> str:
@@ -435,6 +444,12 @@ def process_logged_in_pm_voice_with_intake(
     if not t:
         raise ValueError("transcript is empty")
 
+    if not ensure_global_context_row_exists():
+        raise RuntimeError(
+            "PM voice intake requires global_context; row missing and auto-seed failed. "
+            "Check database connectivity, RLS, and credentials.",
+        )
+
     today = datetime.now(timezone.utc).date().isoformat()
     final_user = (
         f"Reference today's date for interpreting relative timelines: {today}.\n\n"
@@ -456,12 +471,20 @@ def process_logged_in_pm_voice_with_intake(
     # Ensure brief has all keys for stable merge/display
     session.brief = merge_brief(session.brief, {}, {})
 
+    logger.info(
+        "pm memory loaded with %s tasks and %s decisions",
+        len(session.generated_tasks),
+        len(session.important_decisions),
+    )
+
     blocking_before = blocking_missing_for_brief(session.brief)
     gc_block = format_global_context_for_prompt(ctx)
+    pm_block = build_pm_memory_context_block(ctx)
     system = INTAKE_SYSTEM_PROMPT.format(
         global_context_block=gc_block
         if gc_block.strip()
         else "\n## Global workspace context\n(No database row or empty context.)\n",
+        pm_memory_block=pm_block,
         session_state=session.state,
         current_brief=json.dumps(session.brief, ensure_ascii=False),
         blocking_missing=json.dumps(blocking_before),
@@ -480,8 +503,7 @@ def process_logged_in_pm_voice_with_intake(
         session.state = "idle"
         session.missing_blocking = []
         session.last_asked_fields = []
-        session.updated_at = datetime.now(timezone.utc).isoformat()
-        update_global_context("pm_voice_intake", session.model_dump(mode="json"), "pm")
+        save_pm_intake_session(session)
         spoken = data["spoken_reply"] or "Tell me about a project you have in mind when you are ready."
         vr = _pm_result_from_intake(
             status="needs_clarification",
@@ -533,8 +555,7 @@ def process_logged_in_pm_voice_with_intake(
         vr: PmVoiceTranscriptResult,
         tasks_display_text: str,
     ) -> dict[str, Any]:
-        session.updated_at = datetime.now(timezone.utc).isoformat()
-        update_global_context("pm_voice_intake", session.model_dump(mode="json"), "pm")
+        save_pm_intake_session(session)
         payload = vr.model_dump(mode="json")
         payload["pm_intake_state"] = session.state
         payload["project_brief"] = session.brief
@@ -608,9 +629,8 @@ def process_logged_in_pm_voice_with_intake(
         return _persist_and_return(vr=vr, tasks_display_text="")
 
     # Generate tasks
-    session.state = "intake_complete"
-    session.updated_at = datetime.now(timezone.utc).isoformat()
-    update_global_context("pm_voice_intake", session.model_dump(mode="json"), "pm")
+    session.state = "ready_to_plan"
+    save_pm_intake_session(session)
 
     try:
         ctx_for_tasks = get_global_context()
@@ -624,8 +644,7 @@ def process_logged_in_pm_voice_with_intake(
     except Exception as exc:
         logger.exception("PM intake task generation failed: %s", exc)
         session.state = "awaiting_fields"
-        session.updated_at = datetime.now(timezone.utc).isoformat()
-        update_global_context("pm_voice_intake", session.model_dump(mode="json"), "pm")
+        save_pm_intake_session(session)
         raise ValueError(f"Task generation failed: {exc}") from exc
 
     logger.info(
@@ -634,19 +653,19 @@ def process_logged_in_pm_voice_with_intake(
         json.dumps(new_tasks, ensure_ascii=False),
     )
 
-    session.generated_tasks = new_tasks
-    session.tasks_runs.append(
-        {
-            "at": datetime.now(timezone.utc).isoformat(),
-            "task_count": len(new_tasks),
-            "run_id": str(uuid.uuid4()),
-        }
+    res = persist_generated_tasks(
+        new_tasks=new_tasks,
+        source="pm_intake",
+        replace_all_tasks=regenerate,
     )
-    session.state = "tasks_generated"
-    session.last_asked_fields = []
-    session.missing_blocking = []
-    session.updated_at = datetime.now(timezone.utc).isoformat()
-    update_global_context("pm_voice_intake", session.model_dump(mode="json"), "pm")
+    if not res.get("ok"):
+        err = res.get("error", "unknown")
+        logger.error("pm memory persistence failed after pm_intake task gen: %s", err)
+        raise ValueError(
+            f"Task generation succeeded but saving tasks to global_context failed: {err}"
+        ) from None
+
+    session = load_pm_intake_session()
 
     tasks_text = _format_tasks_for_ui(new_tasks)
     spoken_base = data["spoken_reply"] or "Here is an initial task breakdown based on what we captured."

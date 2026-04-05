@@ -35,10 +35,26 @@ export type UseRealtimeMicOptions = {
   getAccessToken?: () => Promise<string | null>;
 };
 
+/**
+ * High-level voice UI phase for the assistant experience (eyes, bars, panels).
+ * `thinking` stays true until the model response is back and playback is about to start
+ * (or immediately if there is nothing to play).
+ */
+export type VoiceExperienceState =
+  | "idle"
+  | "connecting"
+  | "listening"
+  | "thinking"
+  | "speaking"
+  | "complete";
+
 export function useRealtimeMicTranscription(
   options?: UseRealtimeMicOptions,
 ) {
   const [typedText, setTypedText] = useState("");
+  const [assistantReply, setAssistantReply] = useState("");
+  /** Bumps each successful reply so the assistant panel remounts even if `spoken_reply` text repeats. */
+  const [assistantReplyTurnId, setAssistantReplyTurnId] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [voiceProcessing, setVoiceProcessing] = useState(false);
   const [micSessionActive, setMicSessionActive] = useState(false);
@@ -135,7 +151,11 @@ export function useRealtimeMicTranscription(
         tts_enabled?: boolean;
         message?: string;
       },
-      playback?: { onAfterSpeaking?: () => void },
+      playback?: {
+        onAfterSpeaking?: () => void;
+        /** End “thinking” / `voiceProcessing`; call when output begins or cannot play. */
+        onPlaybackStarted?: () => void;
+      },
     ) => {
       const text = rawText.trim();
       const hasMp3 =
@@ -143,13 +163,28 @@ export function useRealtimeMicTranscription(
         !tts?.error &&
         typeof window !== "undefined";
 
-      if (typeof window === "undefined" || (!text && !hasMp3)) return;
+      let playbackNotified = false;
+      const notifyPlaybackStarted = () => {
+        if (playbackNotified) return;
+        playbackNotified = true;
+        playback?.onPlaybackStarted?.();
+      };
+
+      const beginAudibleSpeaking = () => {
+        notifyPlaybackStarted();
+        isAgentSpeakingRef.current = true;
+        setIsAgentSpeaking(true);
+      };
+
+      if (typeof window === "undefined" || (!text && !hasMp3)) {
+        notifyPlaybackStarted();
+        return;
+      }
 
       const s = scribeRef.current;
-      if (!s) return;
-
-      if (s.partialTranscript?.trim()) {
-        setTypedText(s.partialTranscript.trim());
+      if (!s) {
+        notifyPlaybackStarted();
+        return;
       }
 
       const resumeAfter = micSessionActiveRef.current && s.isConnected;
@@ -157,9 +192,6 @@ export function useRealtimeMicTranscription(
       if (s.isConnected) {
         s.disconnect();
       }
-
-      isAgentSpeakingRef.current = true;
-      setIsAgentSpeaking(true);
 
       const afterSpeaking = playback?.onAfterSpeaking;
 
@@ -182,9 +214,11 @@ export function useRealtimeMicTranscription(
 
       const playBrowserTts = () => {
         if (!text) {
+          notifyPlaybackStarted();
           finishSpeaking();
           return;
         }
+        beginAudibleSpeaking();
         window.speechSynthesis.cancel();
         const u = new SpeechSynthesisUtterance(text);
         u.rate = 1;
@@ -206,6 +240,7 @@ export function useRealtimeMicTranscription(
               assistantAudioCtxRef,
               tts.audio_base64!,
               tts.content_type ?? "audio/mpeg",
+              { onStarted: beginAudibleSpeaking },
             );
             finishSpeaking();
           } catch {
@@ -319,7 +354,9 @@ export function useRealtimeMicTranscription(
           { role: "assistant", content: spoken },
         ];
 
-        setTypedText(spoken);
+        setAssistantReply(spoken);
+        setAssistantReplyTurnId((n) => n + 1);
+        setTypedText("");
 
         const postListenLoginRedirect =
           needsLoginRedirect && typeof window !== "undefined"
@@ -331,12 +368,12 @@ export function useRealtimeMicTranscription(
             : undefined;
 
         playAssistantOutput(spoken, data.result?.tts, {
+          onPlaybackStarted: () => setVoiceProcessing(false),
           onAfterSpeaking: postListenLoginRedirect,
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Voice request failed";
         setError(msg);
-      } finally {
         setVoiceProcessing(false);
       }
     },
@@ -384,11 +421,6 @@ export function useRealtimeMicTranscription(
   const stopListening = useCallback(() => {
     micSessionActiveRef.current = false;
     setMicSessionActive(false);
-    if (typeof window !== "undefined") {
-      window.speechSynthesis.cancel();
-    }
-    isAgentSpeakingRef.current = false;
-    setIsAgentSpeaking(false);
     const s = scribeRef.current;
     if (s) {
       s.disconnect();
@@ -396,12 +428,27 @@ export function useRealtimeMicTranscription(
         setTypedText(s.partialTranscript.trim());
       }
     }
+    // Do not cancel speechSynthesis or clear isAgentSpeaking — turning the mic off
+    // only stops capture; assistant TTS may continue with the mic off.
   }, []);
 
   const setTranscriptFromTyping = useCallback((value: string) => {
     if (micSessionActiveRef.current) return;
     setTypedText(value);
   }, []);
+
+  /** Same pipeline as a committed STT line; call when the user sends typed input (e.g. Enter). */
+  const submitTranscriptFromInput = useCallback(
+    (raw: string) => {
+      if (micSessionActiveRef.current) return;
+      const text = raw.trim();
+      if (!text) return;
+      unlockWebAudioOnUserGesture(assistantAudioCtxRef);
+      setTypedText("");
+      enqueueCommitted(text);
+    },
+    [enqueueCommitted],
+  );
 
   const status: MicTranscriptionStatus =
     scribe.status === "connecting"
@@ -414,21 +461,33 @@ export function useRealtimeMicTranscription(
     ? scribe.partialTranscript
     : typedText;
 
+  /** True while connecting or sending a transcript — used to block *starting* the mic, not stopping. */
   const micBusy =
-    scribe.status === "connecting" ||
-    voiceProcessing ||
-    (micSessionActive && isAgentSpeaking && !scribe.isConnected);
+    scribe.status === "connecting" || voiceProcessing;
+
+  const voiceExperienceState: VoiceExperienceState = (() => {
+    if (isAgentSpeaking) return "speaking";
+    if (voiceProcessing) return "thinking";
+    if (micSessionActive && scribe.status === "connecting") return "connecting";
+    if (micSessionActive && scribe.isConnected) return "listening";
+    if (assistantReply.trim()) return "complete";
+    return "idle";
+  })();
 
   return {
     displayText,
+    assistantReply,
+    assistantReplyTurnId,
     isListening: micSessionActive,
     status,
+    voiceExperienceState,
     error,
     voiceProcessing,
     isAgentSpeaking,
     startListening,
     stopListening,
     setTranscriptFromTyping,
+    submitTranscriptFromInput,
     micBusy,
     getConversationSnapshot: () => [...conversationRef.current],
   };

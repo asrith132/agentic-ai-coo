@@ -17,6 +17,7 @@ from typing import Any, Mapping
 import httpx
 
 from app.agents.pm.guest_mode import LOGIN_REQUIRED_SPOKEN_REPLY
+from app.agents.pm.pm_memory import build_pm_memory_context_block
 from app.agents.pm.tools import decompose_founder_goal, parse_founder_goal
 from app.config import settings
 from app.core.context import format_global_context_for_prompt, try_get_global_context
@@ -26,9 +27,9 @@ from app.schemas.pm import FounderGoalInput, PmVoiceTranscriptResult
 
 logger = logging.getLogger(__name__)
 
-# Built-in ElevenLabs premade voice (Rachel). Used for TTS only — Scribe/STT does not use this.
-# Ignores ELEVENLABS_VOICE_ID in .env so you get a stable default (remove that line if unused).
-ELEVENLABS_DEFAULT_TTS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"
+# ElevenLabs TTS voice (server-side default). Scribe/STT does not use this.
+# Ignores ELEVENLABS_VOICE_ID in .env so the default stays code-defined unless you change it here.
+ELEVENLABS_DEFAULT_TTS_VOICE_ID = "6OzrBCQf8cjERkYgzSg8"
 
 PM_VOICE_SYSTEM_PROMPT = """You are the planning intake assistant for an AI COO "PM Agent".
 The conversation may include prior turns: user messages are speech-to-text transcripts from the founder; assistant messages are your own earlier short spoken replies (what they heard). Use that context so follow-up answers make sense.
@@ -552,13 +553,15 @@ def process_pm_voice_transcript(
     else:
         messages = [{"role": "user", "content": final_user}]
 
-    ctx_tail = format_global_context_for_prompt(try_get_global_context())
+    gc_row = try_get_global_context()
+    pm_mem = build_pm_memory_context_block(gc_row)
+    ctx_tail = format_global_context_for_prompt(gc_row)
     if not ctx_tail.strip():
         ctx_tail = (
             "\n\n## Global workspace context\n"
             "(No global_context row in the database yet — seed it to attach live workspace data.)\n"
         )
-    system_prompt = PM_VOICE_SYSTEM_PROMPT + ctx_tail
+    system_prompt = PM_VOICE_SYSTEM_PROMPT + pm_mem + ctx_tail
 
     raw = llm.chat_conversation(
         system_prompt=system_prompt,
@@ -573,9 +576,15 @@ def process_pm_voice_transcript(
 
     if validated.status == "ready_to_plan":
         try:
-            from app.agents.pm.intake_flow import attach_tasks_to_legacy_voice_result
+            from app.agents.pm.intake_flow import (
+                attach_tasks_to_legacy_voice_result,
+                persist_legacy_voice_output_to_pm_intake,
+            )
 
             payload.update(attach_tasks_to_legacy_voice_result(validated))
+            tasks_out = payload.get("generated_tasks")
+            if isinstance(tasks_out, list) and tasks_out:
+                persist_legacy_voice_output_to_pm_intake(validated, tasks_out)
         except Exception as exc:
             logger.warning(
                 "Legacy PM voice: initial task generation skipped: %s",

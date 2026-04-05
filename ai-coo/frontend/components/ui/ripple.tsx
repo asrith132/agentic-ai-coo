@@ -6,12 +6,18 @@ interface RippleProps extends ComponentPropsWithoutRef<"div"> {
   mainCircleSize?: number
   mainCircleOpacity?: number
   numCircles?: number
+  /** CSS color for ring stroke (default: `var(--foreground)`). */
+  ringColor?: string
+  /** Tailwind / classes for each circle fill (default: `bg-foreground/25`). */
+  circleClassName?: string
 }
 
 export const Ripple = React.memo(function Ripple({
   mainCircleSize = 210,
   mainCircleOpacity = 0.24,
   numCircles = 8,
+  ringColor,
+  circleClassName,
   className,
   ...props
 }: RippleProps) {
@@ -32,7 +38,10 @@ export const Ripple = React.memo(function Ripple({
         return (
           <div
             key={i}
-            className={`animate-ripple bg-foreground/25 absolute rounded-full border shadow-xl`}
+            className={cn(
+              "animate-ripple absolute rounded-full border shadow-xl",
+              circleClassName ?? "bg-foreground/25",
+            )}
             style={
               {
                 "--i": i,
@@ -42,7 +51,7 @@ export const Ripple = React.memo(function Ripple({
                 animationDelay,
                 borderStyle,
                 borderWidth: "1px",
-                borderColor: `var(--foreground)`,
+                borderColor: ringColor ?? "var(--foreground)",
                 top: "50%",
                 left: "50%",
                 transform: "translate(-50%, -50%) scale(1)",

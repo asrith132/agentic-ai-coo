@@ -42,11 +42,18 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
 /**
  * Try Web Audio decode + buffer source, then HTMLAudioElement blob playback.
  */
+export type PlayMp3Options = {
+  /** Fired once when audible playback actually starts (after decode / buffer start or HTMLAudio play). */
+  onStarted?: () => void;
+};
+
 export async function playMp3Base64(
   audioCtxRef: MutableRefObject<AudioContext | null>,
   base64: string,
   mimeType: string,
+  options?: PlayMp3Options,
 ): Promise<void> {
+  const onStarted = options?.onStarted;
   const ctx = audioCtxRef.current;
   if (ctx) {
     await ctx.resume();
@@ -60,6 +67,7 @@ export async function playMp3Base64(
         src.onended = () => resolve();
         try {
           src.start(0);
+          onStarted?.();
         } catch (e) {
           reject(e);
         }
@@ -82,6 +90,7 @@ export async function playMp3Base64(
 
   try {
     await audio.play();
+    onStarted?.();
     await new Promise<void>((resolve, reject) => {
       audio.addEventListener("ended", () => {
         URL.revokeObjectURL(url);

@@ -10,8 +10,8 @@ import { useAuth } from "@/components/AuthProvider";
 import {
   PM_PENDING_VOICE_TRANSCRIPT_KEY,
   useRealtimeMicTranscription,
+  type VoiceExperienceState,
 } from "@/hooks/useRealtimeMicTranscription";
-
 type EyeMood = "idle" | "listening" | "thinking";
 
 function useEyeDrift(mood: EyeMood) {
@@ -173,6 +173,87 @@ function MinimalLogo() {
   );
 }
 
+function ThinkingBar() {
+  return (
+    <div
+      className="flex w-full max-w-xl flex-col gap-2"
+      aria-live="polite"
+      role="status"
+      aria-label="Thinking"
+    >
+      <motion.p
+        className="text-center text-sm font-medium tracking-[0.18em] text-amber-200/85"
+        animate={{ opacity: [0.38, 0.92, 0.38] }}
+        transition={{
+          duration: 2.4,
+          repeat: Infinity,
+          ease: "easeInOut",
+        }}
+      >
+        Thinking
+      </motion.p>
+      <div
+        className="h-1.5 w-full overflow-hidden rounded-full bg-white/[0.08]"
+        aria-hidden
+      >
+        <motion.div
+          className="h-full w-[40%] rounded-full bg-gradient-to-r from-transparent via-orange-300/70 to-transparent"
+          initial={false}
+          animate={{ x: ["-100%", "350%"] }}
+          transition={{ duration: 1.15, repeat: Infinity, ease: "linear" }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function AssistantResponsePanel({
+  text,
+  turnId,
+  voiceState,
+}: {
+  text: string;
+  turnId: number;
+  voiceState: VoiceExperienceState;
+}) {
+  const trimmed = text.trim();
+  const hasReply = trimmed.length > 0;
+  const speaking = voiceState === "speaking";
+
+  return (
+    <AnimatePresence mode="wait">
+      {hasReply ? (
+        <motion.div
+          key={`assistant-${turnId}`}
+          layout
+          initial={{ opacity: 0, y: 10, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 6, scale: 0.99 }}
+          transition={{ type: "spring", stiffness: 380, damping: 28 }}
+          className={[
+            "w-full max-w-xl rounded-2xl border px-4 py-3 shadow-[0_12px_40px_rgba(0,0,0,0.45)] backdrop-blur-xl",
+            "border-white/[0.14] bg-gradient-to-b from-white/[0.1] to-white/[0.04]",
+            speaking
+              ? "ring-1 ring-orange-300/30"
+              : "ring-0 ring-transparent",
+          ].join(" ")}
+        >
+          <p className="text-[0.65rem] font-semibold uppercase tracking-[0.2em] text-orange-200/45">
+            Assistant
+          </p>
+          <p
+            className="mt-2 max-h-[min(42vh,14rem)] overflow-y-auto overflow-x-hidden whitespace-pre-wrap text-left text-sm leading-relaxed text-white/48 sm:max-h-[min(38vh,15rem)] sm:text-[0.9375rem] sm:leading-relaxed sm:text-white/52"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {trimmed}
+          </p>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
 function ChatBar({
   listening,
   value,
@@ -180,13 +261,18 @@ function ChatBar({
   micListening,
   micBusy,
   onMicToggle,
+  onSubmitText,
 }: {
+  /** Pulse the bar only while the mic is capturing (not during assistant TTS). */
   listening: boolean;
   value: string;
   onChange: (next: string) => void;
   micListening: boolean;
+  /** Block starting the mic while connecting or processing; never block turning the mic off. */
   micBusy: boolean;
   onMicToggle: () => void;
+  /** Send typed line (Enter); ignored while the mic is capturing. */
+  onSubmitText: (text: string) => void;
 }) {
   return (
     <div className="w-full max-w-xl">
@@ -218,23 +304,32 @@ function ChatBar({
         className="rounded-full border bg-white/[0.03] px-4 py-3 backdrop-blur-md sm:px-5"
       >
         <div className="flex items-center gap-2 sm:gap-3">
-          <input
-            type="text"
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            readOnly={micListening}
-            placeholder="Tap mic, then speak — text appears here"
-            title={
-              micListening
-                ? "Speaking… turn off mic to type with the keyboard."
-                : undefined
-            }
-            className="h-10 min-w-0 flex-1 bg-transparent text-sm text-white/80 outline-none placeholder:text-white/25 read-only:cursor-default"
-          />
+          <form
+            className="min-w-0 flex-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (micListening) return;
+              onSubmitText(value);
+            }}
+          >
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => onChange(e.target.value)}
+              readOnly={micListening}
+              placeholder="Type and press Enter, or use the mic"
+              title={
+                micListening
+                  ? "Listening… turn off the mic to type with the keyboard."
+                  : "Press Enter to send to the assistant"
+              }
+              className="h-10 w-full bg-transparent text-sm text-white/80 outline-none placeholder:text-white/25 read-only:cursor-default"
+            />
+          </form>
           <button
             type="button"
             onClick={onMicToggle}
-            disabled={micBusy}
+            disabled={!micListening && micBusy}
             aria-pressed={micListening}
             aria-label={micListening ? "Stop microphone" : "Start microphone"}
             className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border transition ${
@@ -268,13 +363,17 @@ export default function AgentFaceUI() {
 
   const {
     displayText,
+    assistantReply,
+    assistantReplyTurnId,
     isListening: micListening,
     error: micError,
     voiceProcessing,
     isAgentSpeaking,
+    voiceExperienceState,
     startListening,
     stopListening,
     setTranscriptFromTyping,
+    submitTranscriptFromInput,
     micBusy,
   } = useRealtimeMicTranscription({
     getAccessToken,
@@ -289,15 +388,16 @@ export default function AgentFaceUI() {
     setTranscriptFromTyping(pending);
   }, [authLoading, user?.id, setTranscriptFromTyping]);
 
-  const mood: EyeMood = voiceProcessing
-    ? "thinking"
-    : isAgentSpeaking
+  const mood: EyeMood =
+    voiceExperienceState === "thinking" ||
+    voiceExperienceState === "speaking"
       ? "thinking"
-      : micListening
+      : voiceExperienceState === "listening" ||
+          voiceExperienceState === "connecting"
         ? "listening"
         : "idle";
 
-  const listening = micListening || isAgentSpeaking;
+  const barListening = micListening;
 
   useEffect(() => {
     const id = window.setTimeout(() => {
@@ -327,13 +427,33 @@ export default function AgentFaceUI() {
             className="contents"
           >
             <div className="absolute inset-0 z-0 overflow-hidden">
+              <AnimatePresence mode="sync">
+                {voiceExperienceState === "thinking" ? (
+                  <motion.div
+                    key="thinking-ring"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.28, ease: "easeOut" }}
+                    className="absolute inset-0 z-[1]"
+                  >
+                    <RippleComponent
+                      numCircles={1}
+                      mainCircleSize={248}
+                      mainCircleOpacity={0.36}
+                      ringColor="rgba(251, 191, 36, 0.5)"
+                      circleClassName="bg-amber-400/12 shadow-[0_0_42px_rgba(249,115,22,0.2)]"
+                    />
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
               <motion.div
                 animate={{
                   opacity: isAgentSpeaking ? 0.4 : 0,
                   scale: isAgentSpeaking ? 2.8 : 0.985,
                 }}
                 transition={{ duration: 0.35, ease: "easeInOut" }}
-                className="absolute inset-0"
+                className="absolute inset-0 z-[2]"
               >
                 <RippleComponent />
               </motion.div>
@@ -370,9 +490,28 @@ export default function AgentFaceUI() {
                 <EyesHero mood={mood} />
               </div>
 
-              <div className="flex w-full max-w-xl flex-col items-center gap-2">
+              <div className="flex w-full max-w-xl flex-col items-center gap-3">
+                <AssistantResponsePanel
+                  text={assistantReply}
+                  turnId={assistantReplyTurnId}
+                  voiceState={voiceExperienceState}
+                />
+                <AnimatePresence mode="sync">
+                  {voiceProcessing ? (
+                    <motion.div
+                      key="thinking"
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -2 }}
+                      transition={{ duration: 0.2, ease: "easeOut" }}
+                      className="w-full"
+                    >
+                      <ThinkingBar />
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
                 <ChatBar
-                  listening={listening}
+                  listening={barListening}
                   value={displayText}
                   onChange={setTranscriptFromTyping}
                   micListening={micListening}
@@ -380,6 +519,7 @@ export default function AgentFaceUI() {
                   onMicToggle={() =>
                     micListening ? stopListening() : void startListening()
                   }
+                  onSubmitText={submitTranscriptFromInput}
                 />
                 {micError ? (
                   <p className="max-w-xl text-center text-xs text-red-400/90">

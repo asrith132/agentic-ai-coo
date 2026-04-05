@@ -39,6 +39,11 @@ from app.agents.pm.repository import (
     start_pm_task,
 )
 from app.agents.pm.intake_flow import process_logged_in_pm_voice_with_intake
+from app.agents.pm.pm_memory import (
+    ensure_global_context_row_exists,
+    maybe_extract_and_persist_decisions,
+    persist_tasks_from_decomposed_plan,
+)
 from app.agents.pm.voice import (
     create_scribe_single_use_token,
     get_pm_tts_debug_info,
@@ -171,6 +176,14 @@ def plan_goal_save(
         not saved.get("deduped")
         and int(saved.get("tasks_created") or 0) > 0
     ):
+        try:
+            persist_tasks_from_decomposed_plan(plan, source="plan_goal_save")
+        except Exception as exc:
+            logger.warning(
+                "pm memory: plan_goal_save task mirror to pm_voice_intake failed: %s",
+                exc,
+                exc_info=True,
+            )
         try:
             rp = reprioritize_backlog(trigger_event="plan_saved")
             if rp.get("history_warning") is None:
@@ -478,6 +491,7 @@ def pm_voice_transcript(
     """
     if user is not None:
         conv = [t.model_dump(mode="python") for t in body.conversation]
+        ensure_global_context_row_exists()
         try:
             result = process_logged_in_pm_voice_with_intake(
                 body.transcript,
@@ -520,6 +534,10 @@ def pm_voice_transcript(
             ) from exc
 
         record_pm_voice_turn(body.transcript, result)
+        maybe_extract_and_persist_decisions(
+            user_text=body.transcript,
+            assistant_text=str(result.get("spoken_reply") or ""),
+        )
         return {
             "message": "Voice transcript processed",
             "result": result,
