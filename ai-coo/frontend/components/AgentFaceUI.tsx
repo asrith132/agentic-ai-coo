@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Mic, MicOff } from "lucide-react";
+import { ArrowRight, Mic, MicOff } from "lucide-react";
 import { Ripple as RippleComponent } from "@/components/ui/ripple";
 import { useAuth } from "@/components/AuthProvider";
 import {
@@ -460,30 +460,40 @@ export default function AgentFaceUI() {
             </div>
 
             <div className="relative z-10 flex min-h-screen flex-col items-center justify-between px-6 py-10 sm:px-8 sm:py-12">
-              <header className="flex w-full max-w-xl items-center justify-end gap-3 text-xs text-white/50">
-                {!authConfigured ? (
-                  <span className="text-white/35">Guest preview</span>
-                ) : user ? (
-                  <>
-                    <span className="max-w-[200px] truncate text-white/55">
-                      {user.email}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => void signOut()}
-                      className="rounded-full border border-white/15 px-3 py-1 text-white/70 transition hover:border-white/25 hover:text-white"
+              <header className="flex w-full max-w-xl items-center justify-between gap-4 text-xs text-white/50">
+                <Link
+                  href="/dashboard"
+                  className="group inline-flex items-center gap-2 rounded-full border border-white/12 bg-white/[0.04] px-4 py-2 text-[0.72rem] font-medium tracking-[0.14em] text-white/72 uppercase transition hover:border-emerald-300/35 hover:bg-emerald-400/[0.08] hover:text-emerald-100"
+                >
+                  <span>Skip to dashboard</span>
+                  <ArrowRight className="h-3.5 w-3.5 transition-transform duration-200 group-hover:translate-x-0.5" />
+                </Link>
+
+                <div className="flex items-center gap-3">
+                  {!authConfigured ? (
+                    <span className="text-white/35">Guest preview</span>
+                  ) : user ? (
+                    <>
+                      <span className="max-w-[200px] truncate text-white/55">
+                        {user.email}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void signOut()}
+                        className="rounded-full border border-white/15 px-3 py-1 text-white/70 transition hover:border-white/25 hover:text-white"
+                      >
+                        Sign out
+                      </button>
+                    </>
+                  ) : (
+                    <Link
+                      href={`/login?returnTo=${encodeURIComponent(pathname || "/")}`}
+                      className="rounded-full border border-orange-400/35 bg-orange-500/10 px-3 py-1 text-orange-100/90 transition hover:border-orange-300/50"
                     >
-                      Sign out
-                    </button>
-                  </>
-                ) : (
-                  <Link
-                    href={`/login?returnTo=${encodeURIComponent(pathname || "/")}`}
-                    className="rounded-full border border-orange-400/35 bg-orange-500/10 px-3 py-1 text-orange-100/90 transition hover:border-orange-300/50"
-                  >
-                    Sign in
-                  </Link>
-                )}
+                      Sign in
+                    </Link>
+                  )}
+                </div>
               </header>
 
               <div className="flex w-full flex-1 items-center justify-center">

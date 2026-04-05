@@ -3,6 +3,9 @@
 @tailwind utilities;
 
 :root {
+  --font-inter: "Inter", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", "SF Mono", "Menlo", ui-monospace, monospace;
+  --font-heading: "Inter", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
   --background: oklch(0.09 0.01 260);
   --foreground: oklch(0.98 0 0);
   --card: oklch(0.12 0.01 260);
